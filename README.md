@@ -18,35 +18,129 @@ project-c -> coding-tools-mcp-project-c -> 127.0.0.1:18767
 
 ### OpenAI / ChatGPT Secure MCP Tunnel
 
-使用官方 `openai/tunnel-client`：
+使用官方 `openai/tunnel-client`。首次配置只保留 **2 个必要输入**：
+
+1. **Tunnel ID**
+   - 获取/创建：`https://platform.openai.com/settings/organization/tunnels`
+   - 格式：`tunnel_` + 32 位小写十六进制字符。
+2. **Runtime API Key（CONTROL_PLANE_API_KEY）**
+   - 创建：`https://platform.openai.com/settings/organization/api-keys`
+   - 建议使用 Restricted key，并授予目标 Tunnel 所需的 **Tunnels Read + Use**。
+
+正常运行 **不需要 `OPENAI_ADMIN_KEY`**。Admin Key 只在使用
+`tunnel-client admin tunnels create|list|update|delete` 管理 Tunnel 时需要。
+
+最简交互式配置：
 
 ```bash
-mcpctl tunnel openai ntip tunnel_xxx /root/secrets/openai-runtime-key
+mcpctl tunnel openai ntip
 ```
 
-OpenAI Tunnel 通过出站 HTTPS 与控制面通信。本地 MCP 继续启用 Bearer 认证，`tunnel-client` 会为访问本地 MCP 的请求附加该实例的 Authorization Header。
+命令只会在缺失时询问：
+
+```text
+OpenAI Tunnel ID:
+OpenAI Runtime API Key:   # 隐藏输入
+```
+
+Runtime API Key 会保存到实例 `secrets/`，权限为 `0600`，后续重复执行会直接复用，不再次询问。
+
+已有凭据时也支持非交互：
+
+```bash
+# Tunnel ID 可通过参数或环境变量提供；Runtime Key 推荐用文件提供
+mcpctl tunnel openai ntip tunnel_xxx /root/secrets/openai-runtime-key
+
+# 或
+export OPENAI_TUNNEL_ID=tunnel_xxx
+export CONTROL_PLANE_API_KEY='sk-...'
+mcpctl tunnel openai ntip
+unset CONTROL_PLANE_API_KEY
+```
+
+Tunnel 启动后还有 **1 个必须人工完成的 ChatGPT 操作**：
+
+1. 打开 `https://chatgpt.com/#settings/Connectors`；
+2. 创建/选择 Connector；
+3. 选择 **Connection: Tunnel**；
+4. 选择或粘贴与本机相同的 Tunnel ID。
+
+本地 MCP 继续启用 Bearer 认证，`tunnel-client` 会给访问本地 MCP 的请求附加该实例的 Authorization Header。
 
 ### Cloudflare Tunnel
 
-生产模式使用官方 `cloudflared` 的 remotely-managed named tunnel：
+生产模式使用官方 `cloudflared` 的 remotely-managed named tunnel。首次配置只保留 **1 个必要输入**：
+
+1. **Cloudflare Tunnel Token**
+   - Cloudflare Dashboard：**Networking > Tunnels > 选择 Tunnel > Add a replica**；
+   - 从显示的 `cloudflared` 命令中复制长的 `eyJ...` Token。
+
+已经有 Tunnel Token 时，运行连接器 **不需要 Cloudflare API Token**。
+
+最简交互式配置：
+
+```bash
+mcpctl tunnel cloudflare ntip
+```
+
+命令只会在本地没有已保存 Token 时询问：
+
+```text
+Cloudflare Tunnel Token:   # 隐藏输入
+```
+
+Token 会保存到实例 `secrets/`，权限为 `0600`，后续重复执行会直接复用。
+
+已有 Token 文件时可完全非交互：
 
 ```bash
 mcpctl tunnel cloudflare ntip /root/secrets/cloudflare-tunnel-token
 ```
 
-然后在 Cloudflare Public Hostname / Published Application 中把 Service URL 配为命令输出的：
+或通过环境变量一次性提供：
 
-```text
-http://127.0.0.1:<实例端口>
+```bash
+export CLOUDFLARE_TUNNEL_TOKEN='eyJ...'
+mcpctl tunnel cloudflare ntip
+unset CLOUDFLARE_TUNNEL_TOKEN
 ```
 
-临时测试也支持：
+Tunnel 启动后还有 **1 个必须人工完成的 Cloudflare 路由配置**：
+
+1. Dashboard：**Networking > Tunnels > 选择 Tunnel > Routes > Add route > Published application**；
+2. 自行选择公网 Hostname；
+3. Service URL 填命令输出的：
+   ```text
+   http://127.0.0.1:<实例端口>
+   ```
+
+脚本不会询问 Hostname，因为它不是启动 `cloudflared` 的必要输入，且应由 Cloudflare 侧路由配置管理。
+
+临时测试仍支持：
 
 ```bash
 mcpctl tunnel cloudflare-quick ntip
 ```
 
 Quick Tunnel 不作为生产方案。Cloudflare 只负责公网传输；外部 MCP 客户端仍需按 MCP 服务认证方式提供认证信息。
+
+### 交互原则
+
+`mcpctl tunnel` 遵循“只问必要信息”：
+
+- 已存在实例配置：不问；
+- 已保存 Secret：不问；
+- 能从实例自动得到的 MCP 端口、目标 URL、Bearer Token：不问；
+- OpenAI Admin Key：正常运行不问；
+- Cloudflare API Token：已有 Tunnel Token 时不问；
+- Cloudflare 公网 Hostname：不问，只提示到 Dashboard 配置；
+- 所有交互式 Secret 均隐藏输入。
+
+可随时查看提示：
+
+```bash
+mcpctl tunnel help
+```
 
 ## 离线定义
 
