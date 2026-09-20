@@ -1,0 +1,16 @@
+[Unit]
+Description=Coding Tools MCP tunnel for %i
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+Environment=MCPCTL_HOME=/opt/coding-tools-mcp
+ExecStart=/opt/coding-tools-mcp/tunnel/run.sh run %i
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
