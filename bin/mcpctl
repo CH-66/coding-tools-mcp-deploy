@@ -62,6 +62,10 @@ write_secret_value(){
   chmod 600 "$d/$dest"
   echo "$d/$dest"
 }
+read_env_value(){
+  local file="$1" key="$2"
+  awk -v k="$key" 'index($0,k"=")==1{sub(k"=",""); print; exit}' "$file"
+}
 require_tty_for_secret(){ [[ -t 0 ]] || die "$1 (no TTY; provide a secret file or environment variable)"; }
 prompt_line(){
   local label="$1" value
@@ -167,20 +171,27 @@ cmd_tunnel(){
   case "$sub" in
     openai)
       [[ $# -ge 1 && $# -le 3 ]] || die "usage: mcpctl tunnel openai <name> [tunnel-id] [runtime-key-file]"
-      local n="$1" tid="${2:-}" key_file="${3:-}" key_path="" key_value=""
+      local n="$1" tid="${2:-}" key_file="${3:-}" key_path="" key_value="" saved_tid="" saved_key_path="" help_shown=0
       require_instance "$n"
-      [[ -n "$tid" ]] || tid="${OPENAI_TUNNEL_ID:-}"
-      if [[ -z "$tid" ]]; then show_openai_requirements; tid="$(prompt_line 'OpenAI Tunnel ID')"; fi
+      saved_tid="$(read_env_value "$(instance_env "$n")" OPENAI_TUNNEL_ID || true)"
+      saved_key_path="$(read_env_value "$(instance_env "$n")" OPENAI_RUNTIME_KEY_FILE || true)"
+      [[ -n "$tid" ]] || tid="${OPENAI_TUNNEL_ID:-$saved_tid}"
+      if [[ -z "$tid" ]]; then
+        show_openai_requirements; help_shown=1
+        tid="$(prompt_line 'OpenAI Tunnel ID')"
+      fi
       [[ "$tid" =~ ^tunnel_[0-9a-f]{32}$ ]] || die "invalid OpenAI Tunnel ID: expected tunnel_ followed by 32 lowercase hex characters"
 
       if [[ -n "$key_file" ]]; then
         key_path="$(install_secret "$n" "$key_file" openai_runtime_key)"
+      elif [[ -n "$saved_key_path" && -s "$saved_key_path" ]]; then
+        key_path="$saved_key_path"
       elif [[ -s "$(instance_dir "$n")/secrets/openai_runtime_key" ]]; then
         key_path="$(instance_dir "$n")/secrets/openai_runtime_key"
       else
         key_value="${CONTROL_PLANE_API_KEY:-${OPENAI_RUNTIME_KEY:-}}"
         if [[ -z "$key_value" ]]; then
-          show_openai_requirements
+          (( help_shown == 1 )) || show_openai_requirements
           key_value="$(prompt_secret 'OpenAI Runtime API Key')"
         fi
         key_path="$(write_secret_value "$n" openai_runtime_key "$key_value")"
@@ -199,10 +210,13 @@ cmd_tunnel(){
       ;;
     cloudflare)
       [[ $# -ge 1 && $# -le 2 ]] || die "usage: mcpctl tunnel cloudflare <name> [token-file]"
-      local n="$1" token_file="${2:-}" tok="" token_value=""
+      local n="$1" token_file="${2:-}" tok="" token_value="" saved_token_path=""
       require_instance "$n"
+      saved_token_path="$(read_env_value "$(instance_env "$n")" CLOUDFLARE_TOKEN_FILE || true)"
       if [[ -n "$token_file" ]]; then
         tok="$(install_secret "$n" "$token_file" cloudflare_token)"
+      elif [[ -n "$saved_token_path" && -s "$saved_token_path" ]]; then
+        tok="$saved_token_path"
       elif [[ -s "$(instance_dir "$n")/secrets/cloudflare_token" ]]; then
         tok="$(instance_dir "$n")/secrets/cloudflare_token"
       else
@@ -225,6 +239,8 @@ cmd_tunnel(){
       echo "  Dashboard: Networking > Tunnels > select tunnel > Routes > Add route > Published application"
       echo "  Service URL: http://127.0.0.1:$MCP_PORT"
       echo "  Choose the public hostname in Cloudflare; this script does not need to ask for it."
+      echo "External MCP clients use https://<your-hostname>/mcp and must send the instance Bearer token."
+      echo "The token already exists as MCP_AUTH_TOKEN in $(instance_env "$n"); no new token is required."
       ;;
     cloudflare-quick)
       [[ $# -eq 1 ]] || die "usage: mcpctl tunnel cloudflare-quick <name>"
