@@ -94,15 +94,15 @@ mcp_check(){
 }
 doctor_one(){
   local n="$1" fail=0 c code; load_instance "$n"; c="coding-tools-mcp-$n"; echo "[$n]"
-  [[ -d "$WORKSPACE_DIR" ]] && echo "[PASS] workspace" || { echo "[FAIL] workspace"; ((fail++)); }
-  docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null | grep -q true && echo "[PASS] container" || { echo "[FAIL] container"; ((fail++)); }
-  port_listening "$MCP_PORT" && echo "[PASS] port 127.0.0.1:$MCP_PORT" || { echo "[FAIL] port"; ((fail++)); }
+  [[ -d "$WORKSPACE_DIR" ]] && echo "[PASS] workspace" || { echo "[FAIL] workspace"; fail=$((fail+1)); }
+  docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null | grep -q true && echo "[PASS] container" || { echo "[FAIL] container"; fail=$((fail+1)); }
+  port_listening "$MCP_PORT" && echo "[PASS] port 127.0.0.1:$MCP_PORT" || { echo "[FAIL] port"; fail=$((fail+1)); }
   code="$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' --data '{}' "http://127.0.0.1:$MCP_PORT/mcp" || true)"
-  [[ "$code" == 401 ]] && echo "[PASS] auth rejects anonymous" || { echo "[FAIL] anonymous HTTP=$code"; ((fail++)); }
-  mcp_check && echo "[PASS] authenticated initialize" || { echo "[FAIL] authenticated initialize"; ((fail++)); }
+  [[ "$code" == 401 ]] && echo "[PASS] auth rejects anonymous" || { echo "[FAIL] anonymous HTTP=$code"; fail=$((fail+1)); }
+  mcp_check && echo "[PASS] authenticated initialize" || { echo "[FAIL] authenticated initialize"; fail=$((fail+1)); }
   if [[ "${TUNNEL_PROVIDER:-none}" != none ]]; then
-    systemctl is-active --quiet "coding-tools-tunnel@$n.service" && echo "[PASS] tunnel service ($TUNNEL_PROVIDER)" || { echo "[FAIL] tunnel service"; ((fail++)); }
-    "$TUNNEL_RUNNER" doctor "$n" >/dev/null 2>&1 && echo "[PASS] tunnel doctor" || { echo "[FAIL] tunnel doctor"; ((fail++)); }
+    systemctl is-active --quiet "coding-tools-tunnel@$n.service" && echo "[PASS] tunnel service ($TUNNEL_PROVIDER)" || { echo "[FAIL] tunnel service"; fail=$((fail+1)); }
+    "$TUNNEL_RUNNER" doctor "$n" >/dev/null 2>&1 && echo "[PASS] tunnel doctor" || { echo "[FAIL] tunnel doctor"; fail=$((fail+1)); }
   else echo "[INFO] tunnel disabled"; fi
   return "$fail"
 }
