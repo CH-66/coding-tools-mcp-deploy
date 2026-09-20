@@ -19,10 +19,11 @@ Usage:
   mcpctl start|stop|restart|logs <name>
   mcpctl doctor [name]
   mcpctl remove <name> [--force]
-  mcpctl tunnel openai <name> <tunnel-id> <runtime-key-file>
-  mcpctl tunnel cloudflare <name> <token-file>
+  mcpctl tunnel openai <name> [tunnel-id] [runtime-key-file]
+  mcpctl tunnel cloudflare <name> [token-file]
   mcpctl tunnel cloudflare-quick <name>
   mcpctl tunnel off|status <name>
+  mcpctl tunnel help
   mcpctl version
 USAGE
 }
@@ -53,6 +54,53 @@ set_env_value(){
 install_secret(){
   local n="$1" src="$2" dest="$3" d; [[ -s "$src" ]] || die "secret file missing: $src"
   d="$(instance_dir "$n")/secrets"; mkdir -p "$d"; chmod 700 "$d"; install -m 600 "$src" "$d/$dest"; echo "$d/$dest"
+}
+write_secret_value(){
+  local n="$1" dest="$2" value="$3" d
+  d="$(instance_dir "$n")/secrets"; mkdir -p "$d"; chmod 700 "$d"
+  (umask 077; printf '%s\n' "$value" > "$d/$dest")
+  chmod 600 "$d/$dest"
+  echo "$d/$dest"
+}
+require_tty_for_secret(){ [[ -t 0 ]] || die "$1 (no TTY; provide a secret file or environment variable)"; }
+prompt_line(){
+  local label="$1" value
+  [[ -t 0 ]] || die "$label is required (no TTY)"
+  read -r -p "$label: " value
+  [[ -n "$value" ]] || die "$label cannot be empty"
+  printf '%s' "$value"
+}
+prompt_secret(){
+  local label="$1" value
+  require_tty_for_secret "$label is required"
+  read -r -s -p "$label: " value
+  printf '\n' >&2
+  [[ -n "$value" ]] || die "$label cannot be empty"
+  printf '%s' "$value"
+}
+show_openai_requirements(){
+  cat >&2 <<'EOF'
+OpenAI / ChatGPT Secure MCP Tunnel — first setup requires only:
+  1. Tunnel ID
+     Get/create: https://platform.openai.com/settings/organization/tunnels
+  2. Runtime API key (CONTROL_PLANE_API_KEY)
+     Create:     https://platform.openai.com/settings/organization/api-keys
+     Permission: Tunnels Read + Use
+
+OPENAI_ADMIN_KEY is NOT required for normal runtime. It is only needed if you
+create/list/update/delete tunnels through tunnel-client admin commands.
+EOF
+}
+show_cloudflare_requirements(){
+  cat >&2 <<'EOF'
+Cloudflare Tunnel — first setup requires only:
+  1. Remotely-managed Tunnel token
+     Dashboard: Networking > Tunnels > select tunnel > Add a replica
+     Copy only the token (the long eyJ... value) from the cloudflared command.
+
+A Cloudflare API token is NOT required to run this connector when you already
+have the Tunnel token.
+EOF
 }
 
 cmd_add(){
@@ -118,33 +166,103 @@ cmd_tunnel(){
   local sub="${1:-}"; shift || true
   case "$sub" in
     openai)
-      [[ $# -eq 3 ]] || die "usage: mcpctl tunnel openai <name> <tunnel-id> <runtime-key-file>"
-      local n="$1" tid="$2" key; require_instance "$n"; key="$(install_secret "$n" "$3" openai_runtime_key)"
+      [[ $# -ge 1 && $# -le 3 ]] || die "usage: mcpctl tunnel openai <name> [tunnel-id] [runtime-key-file]"
+      local n="$1" tid="${2:-}" key_file="${3:-}" key_path="" key_value=""
+      require_instance "$n"
+      [[ -n "$tid" ]] || tid="${OPENAI_TUNNEL_ID:-}"
+      if [[ -z "$tid" ]]; then show_openai_requirements; tid="$(prompt_line 'OpenAI Tunnel ID')"; fi
+      [[ "$tid" =~ ^tunnel_[0-9a-f]{32}$ ]] || die "invalid OpenAI Tunnel ID: expected tunnel_ followed by 32 lowercase hex characters"
+
+      if [[ -n "$key_file" ]]; then
+        key_path="$(install_secret "$n" "$key_file" openai_runtime_key)"
+      elif [[ -s "$(instance_dir "$n")/secrets/openai_runtime_key" ]]; then
+        key_path="$(instance_dir "$n")/secrets/openai_runtime_key"
+      else
+        key_value="${CONTROL_PLANE_API_KEY:-${OPENAI_RUNTIME_KEY:-}}"
+        if [[ -z "$key_value" ]]; then
+          show_openai_requirements
+          key_value="$(prompt_secret 'OpenAI Runtime API Key')"
+        fi
+        key_path="$(write_secret_value "$n" openai_runtime_key "$key_value")"
+        unset key_value
+      fi
+
       set_env_value "$(instance_env "$n")" TUNNEL_PROVIDER openai
       set_env_value "$(instance_env "$n")" OPENAI_TUNNEL_ID "$tid"
-      set_env_value "$(instance_env "$n")" OPENAI_RUNTIME_KEY_FILE "$key"
-      systemctl daemon-reload; systemctl enable --now "coding-tools-tunnel@$n.service"
+      set_env_value "$(instance_env "$n")" OPENAI_RUNTIME_KEY_FILE "$key_path"
+      systemctl daemon-reload
+      systemctl enable --now "coding-tools-tunnel@$n.service"
+      echo "OpenAI tunnel configured for '$n'."
+      echo "Required manual ChatGPT step:"
+      echo "  https://chatgpt.com/#settings/Connectors"
+      echo "  Create/select connector -> Connection: Tunnel -> select or paste: $tid"
       ;;
     cloudflare)
-      [[ $# -eq 2 ]] || die "usage: mcpctl tunnel cloudflare <name> <token-file>"
-      local n="$1" tok; require_instance "$n"; tok="$(install_secret "$n" "$2" cloudflare_token)"
+      [[ $# -ge 1 && $# -le 2 ]] || die "usage: mcpctl tunnel cloudflare <name> [token-file]"
+      local n="$1" token_file="${2:-}" tok="" token_value=""
+      require_instance "$n"
+      if [[ -n "$token_file" ]]; then
+        tok="$(install_secret "$n" "$token_file" cloudflare_token)"
+      elif [[ -s "$(instance_dir "$n")/secrets/cloudflare_token" ]]; then
+        tok="$(instance_dir "$n")/secrets/cloudflare_token"
+      else
+        token_value="${CLOUDFLARE_TUNNEL_TOKEN:-}"
+        if [[ -z "$token_value" ]]; then
+          show_cloudflare_requirements
+          token_value="$(prompt_secret 'Cloudflare Tunnel Token')"
+        fi
+        tok="$(write_secret_value "$n" cloudflare_token "$token_value")"
+        unset token_value
+      fi
       set_env_value "$(instance_env "$n")" TUNNEL_PROVIDER cloudflare
       set_env_value "$(instance_env "$n")" CLOUDFLARE_MODE token
       set_env_value "$(instance_env "$n")" CLOUDFLARE_TOKEN_FILE "$tok"
-      load_instance "$n"; echo "Configure Cloudflare Service URL: http://127.0.0.1:$MCP_PORT"
-      systemctl daemon-reload; systemctl enable --now "coding-tools-tunnel@$n.service"
+      load_instance "$n"
+      systemctl daemon-reload
+      systemctl enable --now "coding-tools-tunnel@$n.service"
+      echo "Cloudflare tunnel configured for '$n'."
+      echo "Required manual Cloudflare step:"
+      echo "  Dashboard: Networking > Tunnels > select tunnel > Routes > Add route > Published application"
+      echo "  Service URL: http://127.0.0.1:$MCP_PORT"
+      echo "  Choose the public hostname in Cloudflare; this script does not need to ask for it."
       ;;
     cloudflare-quick)
+      [[ $# -eq 1 ]] || die "usage: mcpctl tunnel cloudflare-quick <name>"
       local n="$1"; require_instance "$n"; set_env_value "$(instance_env "$n")" TUNNEL_PROVIDER cloudflare; set_env_value "$(instance_env "$n")" CLOUDFLARE_MODE quick
       systemctl daemon-reload; systemctl enable --now "coding-tools-tunnel@$n.service"
       ;;
     off)
+      [[ $# -eq 1 ]] || die "usage: mcpctl tunnel off <name>"
       local n="$1"; require_instance "$n"; systemctl disable --now "coding-tools-tunnel@$n.service" >/dev/null 2>&1 || true; set_env_value "$(instance_env "$n")" TUNNEL_PROVIDER none
       ;;
     status)
+      [[ $# -eq 1 ]] || die "usage: mcpctl tunnel status <name>"
       local n="$1"; require_instance "$n"; systemctl status "coding-tools-tunnel@$n.service" --no-pager || true; "$TUNNEL_RUNNER" doctor "$n"
       ;;
-    *) die "usage: mcpctl tunnel {openai|cloudflare|cloudflare-quick|off|status} ..." ;;
+    help|-h|--help)
+      cat <<'EOF'
+Tunnel setup (minimal interaction):
+
+  OpenAI / ChatGPT:
+    mcpctl tunnel openai <name>
+    Prompts only for missing Tunnel ID and Runtime API Key.
+    Optional non-interactive inputs:
+      arg 2 / OPENAI_TUNNEL_ID
+      arg 3 = runtime key file
+      CONTROL_PLANE_API_KEY or OPENAI_RUNTIME_KEY
+
+  Cloudflare:
+    mcpctl tunnel cloudflare <name>
+    Prompts only for a missing remotely-managed Tunnel token.
+    Optional non-interactive inputs:
+      arg 2 = tunnel token file
+      CLOUDFLARE_TUNNEL_TOKEN
+
+Secrets entered interactively are hidden and stored with mode 0600.
+Existing stored secrets are reused without prompting.
+EOF
+      ;;
+    *) die "usage: mcpctl tunnel {openai|cloudflare|cloudflare-quick|off|status|help} ..." ;;
   esac
 }
 
