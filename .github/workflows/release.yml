@@ -1,0 +1,85 @@
+name: Build and publish offline release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".release-trigger"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show environment
+        run: |
+          uname -a
+          docker version
+          docker compose version || true
+
+      - name: Build offline package
+        run: make offline-pkg
+
+      - name: Verify package
+        run: |
+          ls -lh dist/
+          sha256sum dist/*.tgz
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-${{ matrix.arch }}
+          path: dist/*.tgz
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          source config/versions.env
+          echo "tag=v${DEPLOY_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version=${DEPLOY_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Download built packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: offline-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd release-assets
+          sha256sum *.tgz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-assets/* --clobber
+          else
+            gh release create "$TAG" release-assets/*               --target "$GITHUB_SHA"               --title "coding-tools-mcp-deploy $TAG"               --generate-notes
+          fi
