@@ -1,0 +1,9 @@
+dist/
+.build/
+offline/bin/*
+!offline/bin/.gitkeep
+offline/images/*
+!offline/images/.gitkeep
+instances/*
+!instances/.gitkeep
+*.log
