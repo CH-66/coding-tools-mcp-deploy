@@ -116,6 +116,21 @@ Tunnel 启动后还有 **1 个必须人工完成的 Cloudflare 路由配置**：
 
 脚本不会询问 Hostname，因为它不是启动 `cloudflared` 的必要输入，且应由 Cloudflare 侧路由配置管理。
 
+Cloudflare 只提供公网传输，因此外部 MCP 客户端还需要访问：
+
+```text
+https://<你的公网 Hostname>/mcp
+```
+
+并携带该实例现有的：
+
+```text
+Authorization: Bearer <MCP_AUTH_TOKEN>
+```
+
+`MCP_AUTH_TOKEN` 在 `mcpctl add` 时已经自动生成，保存在该实例的
+`instance.env` 中，**无需再让用户创建或输入一个新 Token**。
+
 临时测试仍支持：
 
 ```bash
