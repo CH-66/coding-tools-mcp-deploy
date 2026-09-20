@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="${MCPCTL_HOME:-$(cd "$BIN_DIR/.." && pwd)}"
+INSTANCES_DIR="$ROOT_DIR/instances"
+COMPOSE_FILE="$ROOT_DIR/compose/docker-compose.yml"
+VERSIONS_FILE="$ROOT_DIR/config/versions.env"
+TUNNEL_RUNNER="$ROOT_DIR/tunnel/run.sh"
+
+source "$VERSIONS_FILE"
+mkdir -p "$INSTANCES_DIR"
+
+die(){ echo "ERROR: $*" >&2; exit 1; }
+usage(){ cat <<'USAGE'
+Usage:
+  mcpctl add <name> <workspace> [port]
+  mcpctl list
+  mcpctl start|stop|restart|logs <name>
+  mcpctl doctor [name]
+  mcpctl remove <name> [--force]
+  mcpctl tunnel openai <name> <tunnel-id> <runtime-key-file>
+  mcpctl tunnel cloudflare <name> <token-file>
+  mcpctl tunnel cloudflare-quick <name>
+  mcpctl tunnel off|status <name>
+  mcpctl version
+USAGE
+}
+
+validate_name(){ [[ "$1" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die "invalid instance name: $1"; }
+instance_dir(){ printf '%s/%s' "$INSTANCES_DIR" "$1"; }
+instance_env(){ printf '%s/instance.env' "$(instance_dir "$1")"; }
+require_instance(){ validate_name "$1"; [[ -f "$(instance_env "$1")" ]] || die "instance '$1' does not exist"; }
+load_instance(){ require_instance "$1"; source "$(instance_env "$1")"; }
+
+compose_cmd(){
+  if docker compose version >/dev/null 2>&1; then docker compose "$@";
+  elif command -v docker-compose >/dev/null 2>&1; then docker-compose "$@";
+  else die "docker compose/docker-compose not found"; fi
+}
+compose_instance(){ local n="$1"; shift; require_instance "$n"; compose_cmd --env-file "$(instance_env "$n")" -f "$COMPOSE_FILE" -p "coding-tools-$n" "$@"; }
+
+port_registered(){ local p="$1" f; for f in "$INSTANCES_DIR"/*/instance.env; do [[ -f "$f" ]] || continue; grep -q "^MCP_PORT=$p$" "$f" && return 0; done; return 1; }
+port_listening(){ command -v ss >/dev/null 2>&1 || return 1; ss -lntH 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$1$"; }
+allocate_port(){ local p; for ((p=MCP_BASE_PORT;p<MCP_BASE_PORT+1000;p++)); do ! port_registered "$p" && ! port_listening "$p" && { echo "$p"; return; }; done; die "no free MCP port found"; }
+generate_token(){ if command -v python3 >/dev/null 2>&1; then python3 -c 'import secrets; print(secrets.token_urlsafe(32))'; else openssl rand -hex 32; fi; }
+
+set_env_value(){
+  local file="$1" key="$2" value="$3" tmp; tmp="$(mktemp)"
+  awk -v k="$key" -v v="$value" 'BEGIN{f=0} index($0,k"=")==1{print k"="v;f=1;next}{print} END{if(!f)print k"="v}' "$file" > "$tmp"
+  cat "$tmp" > "$file"; rm -f "$tmp"; chmod 600 "$file"
+}
+install_secret(){
+  local n="$1" src="$2" dest="$3" d; [[ -s "$src" ]] || die "secret file missing: $src"
+  d="$(instance_dir "$n")/secrets"; mkdir -p "$d"; chmod 700 "$d"; install -m 600 "$src" "$d/$dest"; echo "$d/$dest"
+}
+
+cmd_add(){
+  [[ $# -ge 2 && $# -le 3 ]] || die "usage: mcpctl add <name> <workspace> [port]"
+  local n="$1" w="$2" p="${3:-}" token d env
+  validate_name "$n"; [[ ! -e "$(instance_dir "$n")" ]] || die "instance exists: $n"; [[ -d "$w" ]] || die "workspace not found: $w"
+  w="$(cd "$w" && pwd -P)"; [[ -n "$p" ]] || p="$(allocate_port)"
+  [[ "$p" =~ ^[0-9]+$ ]] || die "invalid port"; ! port_registered "$p" || die "port already registered"; ! port_listening "$p" || die "port already listening"
+  token="$(generate_token)"; d="$(instance_dir "$n")"; env="$d/instance.env"; mkdir -p "$d/secrets"; chmod 700 "$d" "$d/secrets"
+  cat > "$env" <<ENV
+INSTANCE_NAME=$n
+WORKSPACE_DIR=$w
+MCP_PORT=$p
+MCP_IMAGE=$MCP_IMAGE
+MCP_PERMISSION_MODE=$MCP_PERMISSION_MODE
+MCP_TELEMETRY=off
+MCP_AUTH_TOKEN=$token
+TUNNEL_PROVIDER=none
+ENV
+  chmod 600 "$env"; compose_instance "$n" up -d
+  echo "Created $n -> http://127.0.0.1:$p/mcp ($w)"
+}
+
+cmd_list(){
+  printf '%-20s %-7s %-10s %-12s %s\n' NAME PORT MCP TUNNEL WORKSPACE
+  local f mcp c
+  for f in "$INSTANCES_DIR"/*/instance.env; do [[ -f "$f" ]] || continue; source "$f"; c="coding-tools-mcp-$INSTANCE_NAME"
+    if docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null | grep -q true; then mcp=running; else mcp=stopped; fi
+    printf '%-20s %-7s %-10s %-12s %s\n' "$INSTANCE_NAME" "$MCP_PORT" "$mcp" "${TUNNEL_PROVIDER:-none}" "$WORKSPACE_DIR"
+  done
+}
+
+cmd_start(){ compose_instance "$1" up -d; load_instance "$1"; [[ "${TUNNEL_PROVIDER:-none}" == none ]] || systemctl start "coding-tools-tunnel@$1.service"; }
+cmd_stop(){ systemctl stop "coding-tools-tunnel@$1.service" >/dev/null 2>&1 || true; compose_instance "$1" stop; }
+cmd_logs(){ compose_instance "$1" logs -f --tail=200; }
+
+mcp_check(){
+  curl -fsS -o /dev/null -H "Authorization: Bearer $MCP_AUTH_TOKEN" -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json'     --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"mcpctl-doctor","version":"0.1"}}}' "http://127.0.0.1:$MCP_PORT/mcp"
+}
+doctor_one(){
+  local n="$1" fail=0 c code; load_instance "$n"; c="coding-tools-mcp-$n"; echo "[$n]"
+  [[ -d "$WORKSPACE_DIR" ]] && echo "[PASS] workspace" || { echo "[FAIL] workspace"; ((fail++)); }
+  docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null | grep -q true && echo "[PASS] container" || { echo "[FAIL] container"; ((fail++)); }
+  port_listening "$MCP_PORT" && echo "[PASS] port 127.0.0.1:$MCP_PORT" || { echo "[FAIL] port"; ((fail++)); }
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' --data '{}' "http://127.0.0.1:$MCP_PORT/mcp" || true)"
+  [[ "$code" == 401 ]] && echo "[PASS] auth rejects anonymous" || { echo "[FAIL] anonymous HTTP=$code"; ((fail++)); }
+  mcp_check && echo "[PASS] authenticated initialize" || { echo "[FAIL] authenticated initialize"; ((fail++)); }
+  if [[ "${TUNNEL_PROVIDER:-none}" != none ]]; then
+    systemctl is-active --quiet "coding-tools-tunnel@$n.service" && echo "[PASS] tunnel service ($TUNNEL_PROVIDER)" || { echo "[FAIL] tunnel service"; ((fail++)); }
+    "$TUNNEL_RUNNER" doctor "$n" >/dev/null 2>&1 && echo "[PASS] tunnel doctor" || { echo "[FAIL] tunnel doctor"; ((fail++)); }
+  else echo "[INFO] tunnel disabled"; fi
+  return "$fail"
+}
+cmd_doctor(){ local total=0 f n rc; if [[ $# -eq 1 ]]; then doctor_one "$1"; return; fi; for f in "$INSTANCES_DIR"/*/instance.env; do [[ -f "$f" ]] || continue; n="$(basename "$(dirname "$f")")"; rc=0; doctor_one "$n" || rc=$?; total=$((total+rc)); done; ((total==0)) && echo "Overall: HEALTHY" || { echo "Overall: $total check(s) failed"; return 1; }; }
+
+cmd_remove(){
+  local n="$1" force="${2:-}"; require_instance "$n"
+  if [[ "$force" != --force ]]; then printf "Remove '%s'? [y/N] " "$n"; read -r a; [[ "$a" =~ ^[Yy]$ ]] || return; fi
+  systemctl disable --now "coding-tools-tunnel@$n.service" >/dev/null 2>&1 || true; compose_instance "$n" down --remove-orphans || true; rm -rf "$(instance_dir "$n")"
+}
+
+cmd_tunnel(){
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    openai)
+      [[ $# -eq 3 ]] || die "usage: mcpctl tunnel openai <name> <tunnel-id> <runtime-key-file>"
+      local n="$1" tid="$2" key; require_instance "$n"; key="$(install_secret "$n" "$3" openai_runtime_key)"
+      set_env_value "$(instance_env "$n")" TUNNEL_PROVIDER openai
+      set_env_value "$(instance_env "$n")" OPENAI_TUNNEL_ID "$tid"
+      set_env_value "$(instance_env "$n")" OPENAI_RUNTIME_KEY_FILE "$key"
+      systemctl daemon-reload; systemctl enable --now "coding-tools-tunnel@$n.service"
+      ;;
+    cloudflare)
+      [[ $# -eq 2 ]] || die "usage: mcpctl tunnel cloudflare <name> <token-file>"
+      local n="$1" tok; require_instance "$n"; tok="$(install_secret "$n" "$2" cloudflare_token)"
+      set_env_value "$(instance_env "$n")" TUNNEL_PROVIDER cloudflare
+      set_env_value "$(instance_env "$n")" CLOUDFLARE_MODE token
+      set_env_value "$(instance_env "$n")" CLOUDFLARE_TOKEN_FILE "$tok"
+      load_instance "$n"; echo "Configure Cloudflare Service URL: http://127.0.0.1:$MCP_PORT"
+      systemctl daemon-reload; systemctl enable --now "coding-tools-tunnel@$n.service"
+      ;;
+    cloudflare-quick)
+      local n="$1"; require_instance "$n"; set_env_value "$(instance_env "$n")" TUNNEL_PROVIDER cloudflare; set_env_value "$(instance_env "$n")" CLOUDFLARE_MODE quick
+      systemctl daemon-reload; systemctl enable --now "coding-tools-tunnel@$n.service"
+      ;;
+    off)
+      local n="$1"; require_instance "$n"; systemctl disable --now "coding-tools-tunnel@$n.service" >/dev/null 2>&1 || true; set_env_value "$(instance_env "$n")" TUNNEL_PROVIDER none
+      ;;
+    status)
+      local n="$1"; require_instance "$n"; systemctl status "coding-tools-tunnel@$n.service" --no-pager || true; "$TUNNEL_RUNNER" doctor "$n"
+      ;;
+    *) die "usage: mcpctl tunnel {openai|cloudflare|cloudflare-quick|off|status} ..." ;;
+  esac
+}
+
+case "${1:-}" in
+  add) shift; cmd_add "$@";; list|ls) cmd_list;; start) shift; cmd_start "$@";; stop) shift; cmd_stop "$@";;
+  restart) shift; cmd_stop "$1"; cmd_start "$1";; logs) shift; cmd_logs "$@";; doctor) shift; cmd_doctor "$@";;
+  remove|rm) shift; cmd_remove "$@";; tunnel) shift; cmd_tunnel "$@";;
+  version|-v|--version) echo "deploy=$DEPLOY_VERSION mcp=$CODING_TOOLS_MCP_VERSION openai=$OPENAI_TUNNEL_CLIENT_VERSION cloudflared=$CLOUDFLARED_VERSION";;
+  *) usage;;
+esac
