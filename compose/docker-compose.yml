@@ -1,0 +1,18 @@
+services:
+  coding-tools-mcp:
+    image: ${MCP_IMAGE}
+    container_name: coding-tools-mcp-${INSTANCE_NAME}
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:${MCP_PORT}:8765"
+    environment:
+      CODING_TOOLS_MCP_HOST: 0.0.0.0
+      CODING_TOOLS_MCP_PORT: 8765
+      CODING_TOOLS_MCP_WORKSPACE: /workspace
+      CODING_TOOLS_MCP_AUTH_MODE: bearer
+      CODING_TOOLS_MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN}
+      CODING_TOOLS_MCP_PERMISSION_MODE: ${MCP_PERMISSION_MODE}
+      CODING_TOOLS_MCP_TELEMETRY: ${MCP_TELEMETRY:-off}
+    volumes:
+      - "${WORKSPACE_DIR}:/workspace"
