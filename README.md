@@ -203,8 +203,8 @@ Tunnel 运行时仍然必须能够出站访问对应厂商公网服务。机器�
 安装离线包：
 
 ```bash
-tar -zxf coding-tools-mcp-deploy-0.1.0-linux-amd64.tgz
-cd coding-tools-mcp-deploy-0.1.0
+tar -zxf coding-tools-mcp-deploy-0.1.1-linux-amd64.tgz
+cd coding-tools-mcp-deploy-0.1.1
 sudo bash scripts/install.sh
 ```
 
@@ -273,7 +273,7 @@ cloudflared           2026.9.1
 输出：
 
 ```text
-dist/coding-tools-mcp-deploy-0.1.0-linux-amd64.tgz
+dist/coding-tools-mcp-deploy-0.1.1-linux-amd64.tgz
 ```
 
 ## 安全默认值
