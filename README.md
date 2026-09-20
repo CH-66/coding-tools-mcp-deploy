@@ -159,7 +159,7 @@ openai tunnel-client  v0.0.14
 cloudflared           2026.9.1
 ```
 
-支持 Linux amd64 和 arm64。
+支持 Linux amd64 和 arm64。V0.1 采用原生架构构建：amd64 构建机生成 amd64 包，arm64 构建机生成 arm64 包，避免 Docker 镜像架构与 Tunnel 二进制架构不一致。
 
 输出：
 
