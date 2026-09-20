@@ -4,7 +4,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$ROOT_DIR/config/versions.env"
 
-ARCH="${ARCH:-$(uname -m)}"
+ARCH="$(uname -m)"
 case "$ARCH" in
   x86_64|amd64) PKG_ARCH=amd64 ;;
   aarch64|arm64) PKG_ARCH=arm64 ;;
