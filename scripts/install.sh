@@ -74,7 +74,6 @@ echo "Installed at $INSTALL_DIR"
 
 if [[ "$MCP_GATEWAY_AUTO_START" != "off" ]]; then
   "$INSTALL_DIR/bin/mcpctl" gateway up
-  "$INSTALL_DIR/bin/mcpctl" gateway sync
 else
   echo "APISIX gateway auto-start disabled (MCP_GATEWAY_AUTO_START=off)"
 fi
