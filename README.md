@@ -2,16 +2,22 @@
 
 `coding-tools-mcp-deploy` 是 `xyTom/coding-tools-mcp` 的离线部署、多项目实例、APISIX Gateway 与 Tunnel 编排层。
 
+**现场安装和交付请直接按 [`docs/operations.md`](docs/operations.md) 操作。**
+
 ## 2.0 架构
 
 2.0 引入 Apache APISIX 作为统一 MCP HTTP Gateway：
 
 ```text
-OpenAI Tunnel / Cloudflare / Local Client
+最终访问入口
+ChatGPT Connector / Cloudflare Tunnel 地址
+                  |
+                  v
+               Tunnel
                   |
                   v
           127.0.0.1:9080
-               APISIX
+        APISIX（内部网关）
                   |
        +----------+-----------+
        |          |           |
@@ -29,7 +35,7 @@ OpenAI Tunnel / Cloudflare / Local Client
 - APISIX：统一 HTTP 路由、URI 重写、流式转发与后续流量治理。
 - etcd：保存 APISIX 动态配置。
 - MCP：继续使用每实例独立 Bearer Token，认证信息不会复制到 APISIX。
-- Tunnel：负责公网/ChatGPT 到本机 Gateway 或 MCP 的安全传输。
+- Tunnel：提供最终对外访问入口，并把请求转发到本机 APISIX Gateway。
 
 详细设计见 `docs/v2-design.md`。
 
