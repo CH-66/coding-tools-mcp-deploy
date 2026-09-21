@@ -30,8 +30,16 @@ docker save -o "$STAGE/offline/images/coding-tools-mcp-$CODING_TOOLS_MCP_VERSION
 echo "Pulling APISIX gateway images for native architecture: $PKG_ARCH"
 docker pull "$APISIX_IMAGE"
 docker save -o "$STAGE/offline/images/apache-apisix-$APISIX_VERSION.tar" "$APISIX_IMAGE"
-docker pull "$ETCD_IMAGE"
-docker save -o "$STAGE/offline/images/etcd-$ETCD_VERSION.tar" "$ETCD_IMAGE"
+if [[ "$PKG_ARCH" == amd64 ]]; then
+  ETCD_SOURCE_IMAGE="$ETCD_AMD64_SOURCE_IMAGE"
+  ETCD_SOURCE_VERSION="$ETCD_AMD64_VERSION"
+else
+  ETCD_SOURCE_IMAGE="$ETCD_ARM64_SOURCE_IMAGE"
+  ETCD_SOURCE_VERSION="$ETCD_ARM64_VERSION"
+fi
+docker pull "$ETCD_SOURCE_IMAGE"
+docker tag "$ETCD_SOURCE_IMAGE" "$ETCD_IMAGE"
+docker save -o "$STAGE/offline/images/etcd-$ETCD_SOURCE_VERSION-$PKG_ARCH.tar" "$ETCD_IMAGE"
 
 OPENAI_ZIP="tunnel-client-$OPENAI_TUNNEL_CLIENT_VERSION-linux-$PKG_ARCH.zip"
 OPENAI_URL="https://github.com/openai/tunnel-client/releases/download/$OPENAI_TUNNEL_CLIENT_VERSION/$OPENAI_ZIP"
