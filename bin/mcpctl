@@ -5,6 +5,10 @@ BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="${MCPCTL_HOME:-$(cd "$BIN_DIR/.." && pwd)}"
 INSTANCES_DIR="$ROOT_DIR/instances"
 COMPOSE_FILE="$ROOT_DIR/compose/docker-compose.yml"
+GATEWAY_COMPOSE_FILE="$ROOT_DIR/compose/gateway-compose.yml"
+GATEWAY_DIR="$ROOT_DIR/gateway"
+GATEWAY_CONFIG="$GATEWAY_DIR/config.yaml"
+GATEWAY_ADMIN_KEY_FILE="$GATEWAY_DIR/admin.key"
 VERSIONS_FILE="$ROOT_DIR/config/versions.env"
 TUNNEL_RUNNER="$ROOT_DIR/tunnel/run.sh"
 
@@ -19,11 +23,19 @@ Usage:
   mcpctl start|stop|restart|logs <name>
   mcpctl doctor [name]
   mcpctl remove <name> [--force]
+
+  mcpctl gateway up|down|restart|status|logs
+  mcpctl gateway list
+  mcpctl gateway sync
+  mcpctl gateway route|unroute <name>
+  mcpctl gateway doctor
+
   mcpctl tunnel openai <name> [tunnel-id] [runtime-key-file]
   mcpctl tunnel cloudflare <name> [token-file]
   mcpctl tunnel cloudflare-quick <name>
   mcpctl tunnel off|status <name>
   mcpctl tunnel help
+
   mcpctl version
 USAGE
 }
@@ -32,22 +44,30 @@ validate_name(){ [[ "$1" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die "invalid instance na
 instance_dir(){ printf '%s/%s' "$INSTANCES_DIR" "$1"; }
 instance_env(){ printf '%s/instance.env' "$(instance_dir "$1")"; }
 require_instance(){ validate_name "$1"; [[ -f "$(instance_env "$1")" ]] || die "instance '$1' does not exist"; }
+
+read_env_value(){
+  local file="$1" key="$2"
+  awk -v k="$key" 'index($0,k"=")==1{sub(k"=",""); print; exit}' "$file"
+}
+
 load_instance(){
   local n="$1" file key value workspace_b64
   require_instance "$n"
   file="$(instance_env "$n")"
 
-  for key in INSTANCE_NAME MCP_PORT MCP_IMAGE MCP_PERMISSION_MODE MCP_TELEMETRY MCP_AUTH_TOKEN TUNNEL_PROVIDER OPENAI_TUNNEL_ID OPENAI_RUNTIME_KEY_FILE CLOUDFLARE_MODE CLOUDFLARE_TOKEN_FILE; do
+  for key in INSTANCE_NAME MCP_PORT MCP_IMAGE MCP_PERMISSION_MODE MCP_TELEMETRY MCP_AUTH_TOKEN MCP_GATEWAY TUNNEL_PROVIDER OPENAI_TUNNEL_ID OPENAI_RUNTIME_KEY_FILE CLOUDFLARE_MODE CLOUDFLARE_TOKEN_FILE; do
     value="$(read_env_value "$file" "$key" || true)"
     printf -v "$key" '%s' "$value"
     export "$key"
   done
+  MCP_GATEWAY="${MCP_GATEWAY:-direct}"
+  export MCP_GATEWAY
 
   workspace_b64="$(read_env_value "$file" WORKSPACE_DIR_B64 || true)"
   if [[ -n "$workspace_b64" ]]; then
     WORKSPACE_DIR="$(printf '%s' "$workspace_b64" | base64 -d 2>/dev/null)" || die "invalid WORKSPACE_DIR_B64 for instance '$n'"
   else
-    # Backward compatibility with v0.1.0/v0.1.1 instance files.
+    # Backward compatibility with v0.x instance files.
     WORKSPACE_DIR="$(read_env_value "$file" WORKSPACE_DIR || true)"
   fi
   export WORKSPACE_DIR
@@ -55,6 +75,10 @@ load_instance(){
   [[ "$INSTANCE_NAME" == "$n" ]] || die "instance name mismatch in $file"
   [[ "$MCP_PORT" =~ ^[0-9]+$ ]] || die "invalid MCP_PORT in $file"
   [[ -n "$MCP_IMAGE" && -n "$MCP_AUTH_TOKEN" && -n "$WORKSPACE_DIR" ]] || die "incomplete instance config: $file"
+  case "$MCP_GATEWAY" in
+    direct|apisix) ;;
+    *) die "invalid MCP_GATEWAY in $file: $MCP_GATEWAY" ;;
+  esac
 }
 
 compose_cmd(){
@@ -88,10 +112,6 @@ write_secret_value(){
   chmod 600 "$d/$dest"
   echo "$d/$dest"
 }
-read_env_value(){
-  local file="$1" key="$2"
-  awk -v k="$key" 'index($0,k"=")==1{sub(k"=",""); print; exit}' "$file"
-}
 require_tty_for_secret(){ [[ -t 0 ]] || die "$1 (no TTY; provide a secret file or environment variable)"; }
 prompt_line(){
   local label="$1" value
@@ -108,6 +128,121 @@ prompt_secret(){
   [[ -n "$value" ]] || die "$label cannot be empty"
   printf '%s' "$value"
 }
+
+gateway_require_files(){
+  [[ -f "$GATEWAY_COMPOSE_FILE" ]] || die "gateway compose file missing: $GATEWAY_COMPOSE_FILE"
+  [[ -s "$GATEWAY_CONFIG" ]] || die "gateway config missing: $GATEWAY_CONFIG (re-run install.sh)"
+  [[ -s "$GATEWAY_ADMIN_KEY_FILE" ]] || die "gateway admin key missing: $GATEWAY_ADMIN_KEY_FILE (re-run install.sh)"
+}
+gateway_export_env(){
+  gateway_require_files
+  export APISIX_IMAGE ETCD_IMAGE APISIX_GATEWAY_PORT APISIX_ADMIN_PORT ETCD_CLIENT_PORT
+  export GATEWAY_DATA_DIR="$GATEWAY_DIR/data"
+  export GATEWAY_CONFIG_FILE="$GATEWAY_CONFIG"
+  mkdir -p "$GATEWAY_DATA_DIR/etcd"
+}
+gateway_compose(){ gateway_export_env; compose_cmd -f "$GATEWAY_COMPOSE_FILE" -p coding-tools-gateway "$@"; }
+gateway_is_running(){ docker inspect -f '{{.State.Running}}' coding-tools-mcp-apisix 2>/dev/null | grep -q true; }
+gateway_admin_key(){ gateway_require_files; cat "$GATEWAY_ADMIN_KEY_FILE"; }
+gateway_admin_base(){ printf 'http://127.0.0.1:%s/apisix/admin' "$APISIX_ADMIN_PORT"; }
+gateway_admin_request(){
+  local method="$1" path="$2" data="${3:-}" key url
+  key="$(gateway_admin_key)"
+  url="$(gateway_admin_base)$path"
+  if [[ -n "$data" ]]; then
+    curl -fsS -X "$method" -H "X-API-KEY: $key" -H 'Content-Type: application/json' --data "$data" "$url"
+  else
+    curl -fsS -X "$method" -H "X-API-KEY: $key" "$url"
+  fi
+}
+gateway_wait(){
+  local i
+  for i in $(seq 1 30); do
+    if gateway_admin_request GET /routes >/dev/null 2>&1; then return 0; fi
+    sleep 1
+  done
+  gateway_compose ps || true
+  die "APISIX Admin API did not become ready"
+}
+gateway_route_id(){ printf 'mcp-%s' "$1"; }
+gateway_route_path(){ printf '/mcp/%s' "$1"; }
+gateway_route_exists(){
+  local n="$1" key code
+  gateway_require_files
+  key="$(gateway_admin_key)"
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -H "X-API-KEY: $key" "$(gateway_admin_base)/routes/$(gateway_route_id "$n")" || true)"
+  [[ "$code" == 200 ]]
+}
+gateway_register_route(){
+  local n="$1" route_id route_path payload
+  require_instance "$n"
+  gateway_is_running || die "APISIX gateway is not running; run: mcpctl gateway up"
+  load_instance "$n"
+  route_id="$(gateway_route_id "$n")"
+  route_path="$(gateway_route_path "$n")"
+  payload="$(cat <<JSON
+{
+  "name": "$route_id",
+  "uri": "$route_path",
+  "status": 1,
+  "timeout": {"connect": 5, "send": 300, "read": 300},
+  "plugins": {
+    "proxy-rewrite": {"uri": "/mcp"},
+    "proxy-buffering": {"disable_proxy_buffering": true}
+  },
+  "upstream": {
+    "type": "roundrobin",
+    "scheme": "http",
+    "nodes": {"127.0.0.1:$MCP_PORT": 1}
+  }
+}
+JSON
+)"
+  gateway_admin_request PUT "/routes/$route_id" "$payload" >/dev/null
+}
+gateway_unregister_route(){
+  local n="$1" key code
+  validate_name "$n"
+  gateway_is_running || return 0
+  gateway_require_files
+  key="$(gateway_admin_key)"
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE -H "X-API-KEY: $key" "$(gateway_admin_base)/routes/$(gateway_route_id "$n")" || true)"
+  [[ "$code" == 200 || "$code" == 404 ]] || die "failed to delete APISIX route for '$n' (HTTP $code)"
+}
+restart_tunnel_if_active(){
+  local n="$1"
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl is-active --quiet "coding-tools-tunnel@$n.service" || return 0
+  systemctl restart "coding-tools-tunnel@$n.service"
+}
+gateway_sync(){
+  local f n
+  gateway_is_running || die "APISIX gateway is not running; run: mcpctl gateway up"
+  for f in "$INSTANCES_DIR"/*/instance.env; do
+    [[ -f "$f" ]] || continue
+    n="$(basename "$(dirname "$f")")"
+    set_env_value "$f" MCP_GATEWAY apisix
+    gateway_register_route "$n"
+    restart_tunnel_if_active "$n"
+    echo "Synced $n -> http://127.0.0.1:$APISIX_GATEWAY_PORT$(gateway_route_path "$n")"
+  done
+}
+gateway_doctor(){
+  local fail=0 f n
+  docker inspect -f '{{.State.Running}}' coding-tools-mcp-etcd 2>/dev/null | grep -q true && echo "[PASS] etcd container" || { echo "[FAIL] etcd container"; fail=$((fail+1)); }
+  gateway_is_running && echo "[PASS] APISIX container" || { echo "[FAIL] APISIX container"; fail=$((fail+1)); }
+  if gateway_admin_request GET /routes >/dev/null 2>&1; then echo "[PASS] APISIX Admin API"; else echo "[FAIL] APISIX Admin API"; fail=$((fail+1)); fi
+  for f in "$INSTANCES_DIR"/*/instance.env; do
+    [[ -f "$f" ]] || continue
+    n="$(basename "$(dirname "$f")")"
+    load_instance "$n"
+    if [[ "$MCP_GATEWAY" == apisix ]]; then
+      gateway_route_exists "$n" && echo "[PASS] route $(gateway_route_path "$n")" || { echo "[FAIL] route $(gateway_route_path "$n")"; fail=$((fail+1)); }
+    fi
+  done
+  (( fail == 0 )) && echo "Gateway: HEALTHY" || { echo "Gateway: $fail check(s) failed"; return 1; }
+}
+
 show_openai_requirements(){
   cat >&2 <<'EOF'
 OpenAI / ChatGPT Secure MCP Tunnel — first setup requires only:
@@ -148,27 +283,52 @@ MCP_IMAGE=$MCP_IMAGE
 MCP_PERMISSION_MODE=$MCP_PERMISSION_MODE
 MCP_TELEMETRY=off
 MCP_AUTH_TOKEN=$token
+MCP_GATEWAY=apisix
 TUNNEL_PROVIDER=none
 ENV
-  chmod 600 "$env"; compose_instance "$n" up -d
-  echo "Created $n -> http://127.0.0.1:$p/mcp ($w)"
+  chmod 600 "$env"
+  compose_instance "$n" up -d
+  if gateway_is_running; then
+    gateway_register_route "$n"
+    echo "Created $n -> http://127.0.0.1:$APISIX_GATEWAY_PORT$(gateway_route_path "$n") ($w)"
+  else
+    echo "Created $n -> http://127.0.0.1:$p/mcp ($w)"
+    echo "WARNING: APISIX gateway is not running; run 'mcpctl gateway up' to publish the gateway route." >&2
+  fi
 }
 
 cmd_list(){
-  printf '%-20s %-7s %-10s %-12s %s\n' NAME PORT MCP TUNNEL WORKSPACE
+  printf '%-20s %-7s %-10s %-9s %-12s %s\n' NAME PORT MCP GATEWAY TUNNEL WORKSPACE
   local f n mcp c
   for f in "$INSTANCES_DIR"/*/instance.env; do [[ -f "$f" ]] || continue; n="$(basename "$(dirname "$f")")"; load_instance "$n"; c="coding-tools-mcp-$INSTANCE_NAME"
     if docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null | grep -q true; then mcp=running; else mcp=stopped; fi
-    printf '%-20s %-7s %-10s %-12s %s\n' "$INSTANCE_NAME" "$MCP_PORT" "$mcp" "${TUNNEL_PROVIDER:-none}" "$WORKSPACE_DIR"
+    printf '%-20s %-7s %-10s %-9s %-12s %s\n' "$INSTANCE_NAME" "$MCP_PORT" "$mcp" "$MCP_GATEWAY" "${TUNNEL_PROVIDER:-none}" "$WORKSPACE_DIR"
   done
 }
 
-cmd_start(){ compose_instance "$1" up -d; load_instance "$1"; [[ "${TUNNEL_PROVIDER:-none}" == none ]] || systemctl start "coding-tools-tunnel@$1.service"; }
-cmd_stop(){ systemctl stop "coding-tools-tunnel@$1.service" >/dev/null 2>&1 || true; compose_instance "$1" stop; }
+cmd_start(){
+  local n="$1"
+  compose_instance "$n" up -d
+  load_instance "$n"
+  if [[ "$MCP_GATEWAY" == apisix ]]; then
+    if gateway_is_running; then gateway_register_route "$n"; else echo "WARNING: APISIX gateway is not running" >&2; fi
+  fi
+  [[ "${TUNNEL_PROVIDER:-none}" == none ]] || systemctl start "coding-tools-tunnel@$n.service"
+}
+cmd_stop(){
+  local n="$1"
+  require_instance "$n"
+  load_instance "$n"
+  [[ "$MCP_GATEWAY" == apisix ]] && gateway_unregister_route "$n" || true
+  systemctl stop "coding-tools-tunnel@$n.service" >/dev/null 2>&1 || true
+  compose_instance "$n" stop
+}
 cmd_logs(){ compose_instance "$1" logs -f --tail=200; }
 
-mcp_check(){
-  curl -fsS -o /dev/null -H "Authorization: Bearer $MCP_AUTH_TOKEN" -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json'     --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"mcpctl-doctor","version":"0.1"}}}' "http://127.0.0.1:$MCP_PORT/mcp"
+mcp_check_url(){
+  local url="$1"
+  curl -fsS -o /dev/null -H "Authorization: Bearer $MCP_AUTH_TOKEN" -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' \
+    --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"mcpctl-doctor","version":"2.0"}}}' "$url"
 }
 doctor_one(){
   local n="$1" fail=0 c code; load_instance "$n"; c="coding-tools-mcp-$n"; echo "[$n]"
@@ -177,7 +337,16 @@ doctor_one(){
   port_listening "$MCP_PORT" && echo "[PASS] port 127.0.0.1:$MCP_PORT" || { echo "[FAIL] port"; fail=$((fail+1)); }
   code="$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' --data '{}' "http://127.0.0.1:$MCP_PORT/mcp" || true)"
   [[ "$code" == 401 ]] && echo "[PASS] auth rejects anonymous" || { echo "[FAIL] anonymous HTTP=$code"; fail=$((fail+1)); }
-  mcp_check && echo "[PASS] authenticated initialize" || { echo "[FAIL] authenticated initialize"; fail=$((fail+1)); }
+  mcp_check_url "http://127.0.0.1:$MCP_PORT/mcp" && echo "[PASS] authenticated initialize" || { echo "[FAIL] authenticated initialize"; fail=$((fail+1)); }
+
+  if [[ "$MCP_GATEWAY" == apisix ]]; then
+    gateway_is_running && echo "[PASS] APISIX gateway" || { echo "[FAIL] APISIX gateway"; fail=$((fail+1)); }
+    gateway_route_exists "$n" && echo "[PASS] APISIX route $(gateway_route_path "$n")" || { echo "[FAIL] APISIX route"; fail=$((fail+1)); }
+    mcp_check_url "http://127.0.0.1:$APISIX_GATEWAY_PORT$(gateway_route_path "$n")" && echo "[PASS] gateway initialize" || { echo "[FAIL] gateway initialize"; fail=$((fail+1)); }
+  else
+    echo "[INFO] gateway direct mode"
+  fi
+
   if [[ "${TUNNEL_PROVIDER:-none}" != none ]]; then
     systemctl is-active --quiet "coding-tools-tunnel@$n.service" && echo "[PASS] tunnel service ($TUNNEL_PROVIDER)" || { echo "[FAIL] tunnel service"; fail=$((fail+1)); }
     "$TUNNEL_RUNNER" doctor "$n" >/dev/null 2>&1 && echo "[PASS] tunnel doctor" || { echo "[FAIL] tunnel doctor"; fail=$((fail+1)); }
@@ -189,7 +358,80 @@ cmd_doctor(){ local total=0 f n rc; if [[ $# -eq 1 ]]; then doctor_one "$1"; ret
 cmd_remove(){
   local n="$1" force="${2:-}"; require_instance "$n"
   if [[ "$force" != --force ]]; then printf "Remove '%s'? [y/N] " "$n"; read -r a; [[ "$a" =~ ^[Yy]$ ]] || return; fi
-  systemctl disable --now "coding-tools-tunnel@$n.service" >/dev/null 2>&1 || true; compose_instance "$n" down --remove-orphans || true; rm -rf "$(instance_dir "$n")"
+  gateway_unregister_route "$n" || true
+  systemctl disable --now "coding-tools-tunnel@$n.service" >/dev/null 2>&1 || true
+  compose_instance "$n" down --remove-orphans || true
+  rm -rf "$(instance_dir "$n")"
+}
+
+cmd_gateway(){
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    up)
+      [[ $# -eq 0 ]] || die "usage: mcpctl gateway up"
+      gateway_compose up -d
+      gateway_wait
+      gateway_sync
+      echo "APISIX gateway: http://127.0.0.1:$APISIX_GATEWAY_PORT"
+      ;;
+    down)
+      [[ $# -eq 0 ]] || die "usage: mcpctl gateway down"
+      gateway_compose down
+      ;;
+    restart)
+      [[ $# -eq 0 ]] || die "usage: mcpctl gateway restart"
+      gateway_compose restart
+      gateway_wait
+      gateway_sync
+      ;;
+    status)
+      [[ $# -eq 0 ]] || die "usage: mcpctl gateway status"
+      gateway_compose ps
+      ;;
+    logs)
+      [[ $# -eq 0 ]] || die "usage: mcpctl gateway logs"
+      gateway_compose logs -f --tail=200
+      ;;
+    list)
+      [[ $# -eq 0 ]] || die "usage: mcpctl gateway list"
+      printf '%-20s %-7s %-9s %-8s %s\n' NAME PORT MODE ROUTE GATEWAY_URL
+      local f n route
+      for f in "$INSTANCES_DIR"/*/instance.env; do
+        [[ -f "$f" ]] || continue
+        n="$(basename "$(dirname "$f")")"; load_instance "$n"; route=absent
+        if gateway_is_running && gateway_route_exists "$n"; then route=active; fi
+        printf '%-20s %-7s %-9s %-8s %s\n' "$n" "$MCP_PORT" "$MCP_GATEWAY" "$route" "http://127.0.0.1:$APISIX_GATEWAY_PORT$(gateway_route_path "$n")"
+      done
+      ;;
+    sync)
+      [[ $# -eq 0 ]] || die "usage: mcpctl gateway sync"
+      gateway_sync
+      ;;
+    route)
+      [[ $# -eq 1 ]] || die "usage: mcpctl gateway route <name>"
+      local n="$1"; require_instance "$n"
+      set_env_value "$(instance_env "$n")" MCP_GATEWAY apisix
+      gateway_register_route "$n"
+      restart_tunnel_if_active "$n"
+      echo "Routed $n -> http://127.0.0.1:$APISIX_GATEWAY_PORT$(gateway_route_path "$n")"
+      ;;
+    unroute)
+      [[ $# -eq 1 ]] || die "usage: mcpctl gateway unroute <name>"
+      local n="$1"; require_instance "$n"
+      gateway_unregister_route "$n"
+      set_env_value "$(instance_env "$n")" MCP_GATEWAY direct
+      restart_tunnel_if_active "$n"
+      echo "Unrouted $n; tunnel target returned to direct MCP"
+      ;;
+    doctor)
+      [[ $# -eq 0 ]] || die "usage: mcpctl gateway doctor"
+      gateway_doctor
+      ;;
+    help|-h|--help)
+      usage
+      ;;
+    *) die "usage: mcpctl gateway {up|down|restart|status|logs|list|sync|route|unroute|doctor}" ;;
+  esac
 }
 
 cmd_tunnel(){
@@ -229,7 +471,9 @@ cmd_tunnel(){
       set_env_value "$(instance_env "$n")" OPENAI_RUNTIME_KEY_FILE "$key_path"
       systemctl daemon-reload
       systemctl enable --now "coding-tools-tunnel@$n.service"
+      load_instance "$n"
       echo "OpenAI tunnel configured for '$n'."
+      [[ "$MCP_GATEWAY" == apisix ]] && echo "MCP target: http://127.0.0.1:$APISIX_GATEWAY_PORT$(gateway_route_path "$n")"
       echo "Required manual ChatGPT step:"
       echo "  https://chatgpt.com/#settings/Connectors"
       echo "  Create/select connector -> Connection: Tunnel -> select or paste: $tid"
@@ -263,9 +507,14 @@ cmd_tunnel(){
       echo "Cloudflare tunnel configured for '$n'."
       echo "Required manual Cloudflare step:"
       echo "  Dashboard: Networking > Tunnels > select tunnel > Routes > Add route > Published application"
-      echo "  Service URL: http://127.0.0.1:$MCP_PORT"
-      echo "  Choose the public hostname in Cloudflare; this script does not need to ask for it."
-      echo "External MCP clients use https://<your-hostname>/mcp and must send the instance Bearer token."
+      if [[ "$MCP_GATEWAY" == apisix ]]; then
+        echo "  Service URL: http://127.0.0.1:$APISIX_GATEWAY_PORT"
+        echo "External MCP URL: https://<your-hostname>$(gateway_route_path "$n")"
+      else
+        echo "  Service URL: http://127.0.0.1:$MCP_PORT"
+        echo "External MCP URL: https://<your-hostname>/mcp"
+      fi
+      echo "External MCP clients must send the instance Bearer token."
       echo "The token already exists as MCP_AUTH_TOKEN in $(instance_env "$n"); no new token is required."
       ;;
     cloudflare-quick)
@@ -288,6 +537,7 @@ Tunnel setup (minimal interaction):
   OpenAI / ChatGPT:
     mcpctl tunnel openai <name>
     Prompts only for missing Tunnel ID and Runtime API Key.
+    In APISIX mode the local MCP target is /mcp/<instance>.
     Optional non-interactive inputs:
       arg 2 / OPENAI_TUNNEL_ID
       arg 3 = runtime key file
@@ -296,6 +546,7 @@ Tunnel setup (minimal interaction):
   Cloudflare:
     mcpctl tunnel cloudflare <name>
     Prompts only for a missing remotely-managed Tunnel token.
+    In APISIX mode publish http://127.0.0.1:9080 and use /mcp/<instance>.
     Optional non-interactive inputs:
       arg 2 = tunnel token file
       CLOUDFLARE_TUNNEL_TOKEN
@@ -309,9 +560,16 @@ EOF
 }
 
 case "${1:-}" in
-  add) shift; cmd_add "$@";; list|ls) cmd_list;; start) shift; cmd_start "$@";; stop) shift; cmd_stop "$@";;
-  restart) shift; cmd_stop "$1"; cmd_start "$1";; logs) shift; cmd_logs "$@";; doctor) shift; cmd_doctor "$@";;
-  remove|rm) shift; cmd_remove "$@";; tunnel) shift; cmd_tunnel "$@";;
-  version|-v|--version) echo "deploy=$DEPLOY_VERSION mcp=$CODING_TOOLS_MCP_VERSION compose=$DOCKER_COMPOSE_VERSION openai=$OPENAI_TUNNEL_CLIENT_VERSION cloudflared=$CLOUDFLARED_VERSION";;
+  add) shift; cmd_add "$@";;
+  list|ls) cmd_list;;
+  start) shift; cmd_start "$@";;
+  stop) shift; cmd_stop "$@";;
+  restart) shift; cmd_stop "$1"; cmd_start "$1";;
+  logs) shift; cmd_logs "$@";;
+  doctor) shift; cmd_doctor "$@";;
+  remove|rm) shift; cmd_remove "$@";;
+  gateway) shift; cmd_gateway "$@";;
+  tunnel) shift; cmd_tunnel "$@";;
+  version|-v|--version) echo "deploy=$DEPLOY_VERSION mcp=$CODING_TOOLS_MCP_VERSION compose=$DOCKER_COMPOSE_VERSION apisix=$APISIX_VERSION etcd=$ETCD_VERSION openai=$OPENAI_TUNNEL_CLIENT_VERSION cloudflared=$CLOUDFLARED_VERSION";;
   *) usage;;
 esac
