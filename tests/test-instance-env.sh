@@ -28,7 +28,7 @@ export EXPECTED_WORKSPACE="$workspace"
 
 (
   cd "$TMP"
-  MCPCTL_HOME="$HOME_DIR" "$ROOT/bin/mcpctl" add safe-test "$workspace" 19991
+  MCPCTL_HOME="$HOME_DIR" bash "$ROOT/bin/mcpctl" add safe-test "$workspace" 19991
 )
 [[ ! -e "$TMP/PWNED" ]]
 grep -q '^WORKSPACE_DIR_B64=' "$HOME_DIR/instances/safe-test/instance.env"
@@ -48,7 +48,7 @@ ENV
 chmod 600 "$HOME_DIR/instances/legacy/instance.env"
 (
   cd "$TMP"
-  MCPCTL_HOME="$HOME_DIR" "$ROOT/bin/mcpctl" start legacy
+  MCPCTL_HOME="$HOME_DIR" bash "$ROOT/bin/mcpctl" start legacy
 )
 [[ ! -e "$TMP/PWNED" ]]
 
@@ -62,7 +62,7 @@ ENV
 chmod 600 "$HOME_DIR/instances/bad-provider/instance.env"
 (
   cd "$TMP"
-  if MCPCTL_HOME="$HOME_DIR" "$ROOT/tunnel/run.sh" doctor bad-provider; then
+  if MCPCTL_HOME="$HOME_DIR" bash "$ROOT/tunnel/run.sh" doctor bad-provider; then
     echo "malicious provider was unexpectedly accepted" >&2
     exit 1
   fi
