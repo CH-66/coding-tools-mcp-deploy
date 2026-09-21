@@ -6,13 +6,13 @@ services:
     network_mode: host
     user: root
     environment:
-      ETCD_DATA_DIR: /bitnami/etcd/data
+      ETCD_DATA_DIR: /etcd-data
       ETCD_ENABLE_V2: "true"
       ALLOW_NONE_AUTHENTICATION: "yes"
       ETCD_LISTEN_CLIENT_URLS: "http://127.0.0.1:${ETCD_CLIENT_PORT}"
       ETCD_ADVERTISE_CLIENT_URLS: "http://127.0.0.1:${ETCD_CLIENT_PORT}"
     volumes:
-      - "${GATEWAY_DATA_DIR}/etcd:/bitnami/etcd"
+      - "${GATEWAY_DATA_DIR}/etcd:/etcd-data"
 
   coding-tools-apisix:
     image: ${APISIX_IMAGE}
