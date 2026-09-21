@@ -32,19 +32,45 @@ validate_name(){ [[ "$1" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die "invalid instance na
 instance_dir(){ printf '%s/%s' "$INSTANCES_DIR" "$1"; }
 instance_env(){ printf '%s/instance.env' "$(instance_dir "$1")"; }
 require_instance(){ validate_name "$1"; [[ -f "$(instance_env "$1")" ]] || die "instance '$1' does not exist"; }
-load_instance(){ require_instance "$1"; source "$(instance_env "$1")"; }
+load_instance(){
+  local n="$1" file key value workspace_b64
+  require_instance "$n"
+  file="$(instance_env "$n")"
+
+  for key in INSTANCE_NAME MCP_PORT MCP_IMAGE MCP_PERMISSION_MODE MCP_TELEMETRY MCP_AUTH_TOKEN TUNNEL_PROVIDER OPENAI_TUNNEL_ID OPENAI_RUNTIME_KEY_FILE CLOUDFLARE_MODE CLOUDFLARE_TOKEN_FILE; do
+    value="$(read_env_value "$file" "$key" || true)"
+    printf -v "$key" '%s' "$value"
+    export "$key"
+  done
+
+  workspace_b64="$(read_env_value "$file" WORKSPACE_DIR_B64 || true)"
+  if [[ -n "$workspace_b64" ]]; then
+    WORKSPACE_DIR="$(printf '%s' "$workspace_b64" | base64 -d 2>/dev/null)" || die "invalid WORKSPACE_DIR_B64 for instance '$n'"
+  else
+    # Backward compatibility with v0.1.0/v0.1.1 instance files.
+    WORKSPACE_DIR="$(read_env_value "$file" WORKSPACE_DIR || true)"
+  fi
+  export WORKSPACE_DIR
+
+  [[ "$INSTANCE_NAME" == "$n" ]] || die "instance name mismatch in $file"
+  [[ "$MCP_PORT" =~ ^[0-9]+$ ]] || die "invalid MCP_PORT in $file"
+  [[ -n "$MCP_IMAGE" && -n "$MCP_AUTH_TOKEN" && -n "$WORKSPACE_DIR" ]] || die "incomplete instance config: $file"
+}
 
 compose_cmd(){
-  if docker compose version >/dev/null 2>&1; then docker compose "$@";
+  local bundled="$ROOT_DIR/bin/docker-compose"
+  if [[ -x "$bundled" ]]; then "$bundled" "$@";
+  elif docker compose version >/dev/null 2>&1; then docker compose "$@";
   elif command -v docker-compose >/dev/null 2>&1; then docker-compose "$@";
   else die "docker compose/docker-compose not found"; fi
 }
-compose_instance(){ local n="$1"; shift; require_instance "$n"; compose_cmd --env-file "$(instance_env "$n")" -f "$COMPOSE_FILE" -p "coding-tools-$n" "$@"; }
+compose_instance(){ local n="$1"; shift; load_instance "$n"; compose_cmd -f "$COMPOSE_FILE" -p "coding-tools-$n" "$@"; }
 
 port_registered(){ local p="$1" f; for f in "$INSTANCES_DIR"/*/instance.env; do [[ -f "$f" ]] || continue; grep -q "^MCP_PORT=$p$" "$f" && return 0; done; return 1; }
 port_listening(){ command -v ss >/dev/null 2>&1 || return 1; ss -lntH 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$1$"; }
 allocate_port(){ local p; for ((p=MCP_BASE_PORT;p<MCP_BASE_PORT+1000;p++)); do ! port_registered "$p" && ! port_listening "$p" && { echo "$p"; return; }; done; die "no free MCP port found"; }
 generate_token(){ if command -v python3 >/dev/null 2>&1; then python3 -c 'import secrets; print(secrets.token_urlsafe(32))'; else openssl rand -hex 32; fi; }
+encode_workspace(){ printf '%s' "$1" | base64 | tr -d '\n'; }
 
 set_env_value(){
   local file="$1" key="$2" value="$3" tmp; tmp="$(mktemp)"
@@ -109,14 +135,14 @@ EOF
 
 cmd_add(){
   [[ $# -ge 2 && $# -le 3 ]] || die "usage: mcpctl add <name> <workspace> [port]"
-  local n="$1" w="$2" p="${3:-}" token d env
+  local n="$1" w="$2" p="${3:-}" token d env workspace_b64
   validate_name "$n"; [[ ! -e "$(instance_dir "$n")" ]] || die "instance exists: $n"; [[ -d "$w" ]] || die "workspace not found: $w"
   w="$(cd "$w" && pwd -P)"; [[ -n "$p" ]] || p="$(allocate_port)"
   [[ "$p" =~ ^[0-9]+$ ]] || die "invalid port"; ! port_registered "$p" || die "port already registered"; ! port_listening "$p" || die "port already listening"
-  token="$(generate_token)"; d="$(instance_dir "$n")"; env="$d/instance.env"; mkdir -p "$d/secrets"; chmod 700 "$d" "$d/secrets"
+  token="$(generate_token)"; workspace_b64="$(encode_workspace "$w")"; d="$(instance_dir "$n")"; env="$d/instance.env"; mkdir -p "$d/secrets"; chmod 700 "$d" "$d/secrets"
   cat > "$env" <<ENV
 INSTANCE_NAME=$n
-WORKSPACE_DIR=$w
+WORKSPACE_DIR_B64=$workspace_b64
 MCP_PORT=$p
 MCP_IMAGE=$MCP_IMAGE
 MCP_PERMISSION_MODE=$MCP_PERMISSION_MODE
@@ -130,8 +156,8 @@ ENV
 
 cmd_list(){
   printf '%-20s %-7s %-10s %-12s %s\n' NAME PORT MCP TUNNEL WORKSPACE
-  local f mcp c
-  for f in "$INSTANCES_DIR"/*/instance.env; do [[ -f "$f" ]] || continue; source "$f"; c="coding-tools-mcp-$INSTANCE_NAME"
+  local f n mcp c
+  for f in "$INSTANCES_DIR"/*/instance.env; do [[ -f "$f" ]] || continue; n="$(basename "$(dirname "$f")")"; load_instance "$n"; c="coding-tools-mcp-$INSTANCE_NAME"
     if docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null | grep -q true; then mcp=running; else mcp=stopped; fi
     printf '%-20s %-7s %-10s %-12s %s\n' "$INSTANCE_NAME" "$MCP_PORT" "$mcp" "${TUNNEL_PROVIDER:-none}" "$WORKSPACE_DIR"
   done
@@ -286,6 +312,6 @@ case "${1:-}" in
   add) shift; cmd_add "$@";; list|ls) cmd_list;; start) shift; cmd_start "$@";; stop) shift; cmd_stop "$@";;
   restart) shift; cmd_stop "$1"; cmd_start "$1";; logs) shift; cmd_logs "$@";; doctor) shift; cmd_doctor "$@";;
   remove|rm) shift; cmd_remove "$@";; tunnel) shift; cmd_tunnel "$@";;
-  version|-v|--version) echo "deploy=$DEPLOY_VERSION mcp=$CODING_TOOLS_MCP_VERSION openai=$OPENAI_TUNNEL_CLIENT_VERSION cloudflared=$CLOUDFLARED_VERSION";;
+  version|-v|--version) echo "deploy=$DEPLOY_VERSION mcp=$CODING_TOOLS_MCP_VERSION compose=$DOCKER_COMPOSE_VERSION openai=$OPENAI_TUNNEL_CLIENT_VERSION cloudflared=$CLOUDFLARED_VERSION";;
   *) usage;;
 esac

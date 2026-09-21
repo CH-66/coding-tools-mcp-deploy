@@ -164,9 +164,11 @@ mcpctl tunnel help
 - 现场不访问 GitHub；
 - 不执行 apt/pip/npm/go 在线安装；
 - MCP Docker image 已包含在交付包；
+- Docker Compose standalone 已包含在交付包；
 - OpenAI `tunnel-client` 已包含在交付包；
 - Cloudflare `cloudflared` 已包含在交付包；
-- 安装阶段不下载任何运行组件。
+- 安装阶段不下载任何运行组件；
+- 现场只要求 Docker daemon 已安装并运行，不要求预装 `docker compose` / `docker-compose`。
 
 Tunnel 运行时仍然必须能够出站访问对应厂商公网服务。机器完全断网时，公网 Tunnel 不可能建立。
 
@@ -176,6 +178,7 @@ Tunnel 运行时仍然必须能够出站访问对应厂商公网服务。机器�
 /opt/coding-tools-mcp/
 ├── bin/
 │   ├── mcpctl
+│   ├── docker-compose
 │   ├── tunnel-client
 │   └── cloudflared
 ├── compose/
@@ -203,8 +206,8 @@ Tunnel 运行时仍然必须能够出站访问对应厂商公网服务。机器�
 安装离线包：
 
 ```bash
-tar -zxf coding-tools-mcp-deploy-0.1.1-linux-amd64.tgz
-cd coding-tools-mcp-deploy-0.1.1
+tar -zxf coding-tools-mcp-deploy-0.1.2-linux-amd64.tgz
+cd coding-tools-mcp-deploy-0.1.2
 sudo bash scripts/install.sh
 ```
 
@@ -255,25 +258,31 @@ make offline-pkg
 
 1. 拉取并构建 `coding-tools-mcp`；
 2. `docker save` MCP 镜像；
-3. 下载 OpenAI `tunnel-client` 对应架构 release；
-4. 下载 Cloudflare `cloudflared` 对应架构 release；
-5. 生成 `SHA256SUMS`；
-6. 输出完整 tgz。
+3. 下载并校验 Docker Compose standalone 对应架构 release；
+4. 下载 OpenAI `tunnel-client` 对应架构 release；
+5. 下载 Cloudflare `cloudflared` 对应架构 release；
+6. 生成 `SHA256SUMS`；
+7. 输出完整 tgz。
 
 当前锁定：
 
 ```text
 coding-tools-mcp      0.3.0
+Docker Compose        v2.20.3
 openai tunnel-client  v0.0.14
 cloudflared           2026.9.1
 ```
 
 支持 Linux amd64 和 arm64。V0.1 采用原生架构构建：amd64 构建机生成 amd64 包，arm64 构建机生成 arm64 包，避免 Docker 镜像架构与 Tunnel 二进制架构不一致。
 
+Docker Compose 使用包内固定版本的 standalone 二进制，`mcpctl` 会优先调用
+`/opt/coding-tools-mcp/bin/docker-compose`。因此 Docker 18.09 等没有 Compose
+plugin 的现场环境不需要额外联网安装 Compose。
+
 输出：
 
 ```text
-dist/coding-tools-mcp-deploy-0.1.1-linux-amd64.tgz
+dist/coding-tools-mcp-deploy-0.1.2-linux-amd64.tgz
 ```
 
 ## 安全默认值
@@ -282,6 +291,8 @@ dist/coding-tools-mcp-deploy-0.1.1-linux-amd64.tgz
 - 每个实例独立 Bearer Token；
 - Secret 文件权限 0600；
 - 实例目录权限 0700；
+- `instance.env` 不再通过 shell `source` 执行；实例字段按白名单读取；
+- 新建实例的 workspace 路径使用 Base64 保存，避免空格、`$()`、`;` 等字符进入 shell 语法；
 - Cloudflare 使用 token file，避免把 token 放进进程参数；
 - `cloudflared --no-autoupdate`；
 - MCP telemetry 默认关闭；
@@ -290,5 +301,6 @@ dist/coding-tools-mcp-deploy-0.1.1-linux-amd64.tgz
 ## 上游
 
 - https://github.com/xyTom/coding-tools-mcp
+- https://github.com/docker/compose
 - https://github.com/openai/tunnel-client
 - https://github.com/cloudflare/cloudflared
