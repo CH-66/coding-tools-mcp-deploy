@@ -321,18 +321,20 @@ mcpctl gateway list
 mcpctl tunnel openai agent
 ```
 
-如果使用 Cloudflare Tunnel：
-
-```bash
-mcpctl tunnel cloudflare agent
-```
-
-Cloudflare 最终地址按实例名区分：
+如果多个实例共用**同一个 Cloudflare Tunnel 和同一个公网域名**，不用为 `agent` 再启动一条 Tunnel。原有 Cloudflare Tunnel 已经指向 APISIX，新实例注册 Route 后即可直接访问：
 
 ```text
 https://mcp.example.com/mcp/ntip
 https://mcp.example.com/mcp/agent
 ```
+
+如果 `agent` 要使用**独立 Cloudflare Tunnel / 独立公网域名**，再执行：
+
+```bash
+mcpctl tunnel cloudflare agent
+```
+
+并在 Cloudflare 中为该 Tunnel 单独配置 Published application。
 
 ## 9. 从 0.1.x 升级到 2.0
 
