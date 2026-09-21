@@ -6,12 +6,12 @@ source "$ROOT_DIR/config/versions.env"
 
 ARCH="$(uname -m)"
 case "$ARCH" in
-  x86_64|amd64) PKG_ARCH=amd64 ;;
-  aarch64|arm64) PKG_ARCH=arm64 ;;
+  x86_64|amd64) PKG_ARCH=amd64; COMPOSE_ARCH=x86_64 ;;
+  aarch64|arm64) PKG_ARCH=arm64; COMPOSE_ARCH=aarch64 ;;
   *) echo "unsupported arch: $ARCH" >&2; exit 1 ;;
 esac
 
-for c in git docker curl unzip tar sha256sum; do
+for c in git docker curl unzip tar sha256sum awk; do
   command -v "$c" >/dev/null 2>&1 || { echo "$c is required on build machine" >&2; exit 1; }
 done
 docker info >/dev/null 2>&1 || { echo "docker daemon unavailable" >&2; exit 1; }
@@ -39,6 +39,20 @@ install -m 755 "$OPENAI_BIN" "$STAGE/offline/bin/tunnel-client"
 CF_URL="https://github.com/cloudflare/cloudflared/releases/download/$CLOUDFLARED_VERSION/cloudflared-linux-$PKG_ARCH"
 curl -fL --retry 3 -o "$STAGE/offline/bin/cloudflared" "$CF_URL"
 chmod 755 "$STAGE/offline/bin/cloudflared"
+
+COMPOSE_ASSET="docker-compose-linux-$COMPOSE_ARCH"
+COMPOSE_URL="https://github.com/docker/compose/releases/download/$DOCKER_COMPOSE_VERSION/$COMPOSE_ASSET"
+COMPOSE_SHA_URL="$COMPOSE_URL.sha256"
+curl -fL --retry 3 -o "$STAGE/offline/bin/docker-compose" "$COMPOSE_URL"
+curl -fL --retry 3 -o "$BUILD/$COMPOSE_ASSET.sha256" "$COMPOSE_SHA_URL"
+EXPECTED_COMPOSE_SHA="$(awk '{print $1; exit}' "$BUILD/$COMPOSE_ASSET.sha256")"
+ACTUAL_COMPOSE_SHA="$(sha256sum "$STAGE/offline/bin/docker-compose" | awk '{print $1}')"
+[[ -n "$EXPECTED_COMPOSE_SHA" && "$ACTUAL_COMPOSE_SHA" == "$EXPECTED_COMPOSE_SHA" ]] || {
+  echo "docker-compose checksum mismatch: expected=$EXPECTED_COMPOSE_SHA actual=$ACTUAL_COMPOSE_SHA" >&2
+  exit 1
+}
+chmod 755 "$STAGE/offline/bin/docker-compose"
+"$STAGE/offline/bin/docker-compose" version >/dev/null
 
 for path in README.md LICENSE Makefile bin compose config scripts tunnel systemd; do
   cp -a "$ROOT_DIR/$path" "$STAGE/"
