@@ -157,7 +157,7 @@ gateway_admin_request(){
 }
 gateway_wait(){
   local i
-  for i in $(seq 1 30); do
+  for ((i=1; i<=30; i++)); do
     if gateway_admin_request GET /routes >/dev/null 2>&1; then return 0; fi
     sleep 1
   done
@@ -570,6 +570,6 @@ case "${1:-}" in
   remove|rm) shift; cmd_remove "$@";;
   gateway) shift; cmd_gateway "$@";;
   tunnel) shift; cmd_tunnel "$@";;
-  version|-v|--version) echo "deploy=$DEPLOY_VERSION mcp=$CODING_TOOLS_MCP_VERSION compose=$DOCKER_COMPOSE_VERSION apisix=$APISIX_VERSION etcd=$ETCD_VERSION openai=$OPENAI_TUNNEL_CLIENT_VERSION cloudflared=$CLOUDFLARED_VERSION";;
+  version|-v|--version) echo "deploy=$DEPLOY_VERSION mcp=$CODING_TOOLS_MCP_VERSION compose=$DOCKER_COMPOSE_VERSION apisix=$APISIX_VERSION etcd=$ETCD_IMAGE openai=$OPENAI_TUNNEL_CLIENT_VERSION cloudflared=$CLOUDFLARED_VERSION";;
   *) usage;;
 esac
