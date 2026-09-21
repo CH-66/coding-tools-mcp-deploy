@@ -27,6 +27,20 @@ git clone --depth 1 --branch "$CODING_TOOLS_MCP_REF" https://github.com/xyTom/co
 docker build -t "$MCP_IMAGE" "$UPSTREAM"
 docker save -o "$STAGE/offline/images/coding-tools-mcp-$CODING_TOOLS_MCP_VERSION.tar" "$MCP_IMAGE"
 
+echo "Pulling APISIX gateway images for native architecture: $PKG_ARCH"
+docker pull "$APISIX_IMAGE"
+docker save -o "$STAGE/offline/images/apache-apisix-$APISIX_VERSION.tar" "$APISIX_IMAGE"
+if [[ "$PKG_ARCH" == amd64 ]]; then
+  ETCD_SOURCE_IMAGE="$ETCD_AMD64_SOURCE_IMAGE"
+  ETCD_SOURCE_VERSION="$ETCD_AMD64_VERSION"
+else
+  ETCD_SOURCE_IMAGE="$ETCD_ARM64_SOURCE_IMAGE"
+  ETCD_SOURCE_VERSION="$ETCD_ARM64_VERSION"
+fi
+docker pull "$ETCD_SOURCE_IMAGE"
+docker tag "$ETCD_SOURCE_IMAGE" "$ETCD_IMAGE"
+docker save -o "$STAGE/offline/images/etcd-$ETCD_SOURCE_VERSION-$PKG_ARCH.tar" "$ETCD_IMAGE"
+
 OPENAI_ZIP="tunnel-client-$OPENAI_TUNNEL_CLIENT_VERSION-linux-$PKG_ARCH.zip"
 OPENAI_URL="https://github.com/openai/tunnel-client/releases/download/$OPENAI_TUNNEL_CLIENT_VERSION/$OPENAI_ZIP"
 mkdir -p "$BUILD/openai"
@@ -54,7 +68,7 @@ ACTUAL_COMPOSE_SHA="$(sha256sum "$STAGE/offline/bin/docker-compose" | awk '{prin
 chmod 755 "$STAGE/offline/bin/docker-compose"
 "$STAGE/offline/bin/docker-compose" version >/dev/null
 
-for path in README.md LICENSE Makefile bin compose config scripts tunnel systemd; do
+for path in README.md LICENSE Makefile bin compose config docs gateway scripts tunnel systemd; do
   cp -a "$ROOT_DIR/$path" "$STAGE/"
 done
 mkdir -p "$STAGE/instances"

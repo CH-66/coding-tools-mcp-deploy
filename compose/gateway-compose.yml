@@ -1,0 +1,25 @@
+services:
+  coding-tools-etcd:
+    image: ${ETCD_IMAGE}
+    container_name: coding-tools-mcp-etcd
+    restart: unless-stopped
+    network_mode: host
+    user: root
+    environment:
+      ETCD_DATA_DIR: /etcd-data
+      ETCD_ENABLE_V2: "true"
+      ALLOW_NONE_AUTHENTICATION: "yes"
+      ETCD_LISTEN_CLIENT_URLS: "http://127.0.0.1:${ETCD_CLIENT_PORT}"
+      ETCD_ADVERTISE_CLIENT_URLS: "http://127.0.0.1:${ETCD_CLIENT_PORT}"
+    volumes:
+      - "${GATEWAY_DATA_DIR}/etcd:/etcd-data"
+
+  coding-tools-apisix:
+    image: ${APISIX_IMAGE}
+    container_name: coding-tools-mcp-apisix
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - coding-tools-etcd
+    volumes:
+      - "${GATEWAY_CONFIG_FILE}:/usr/local/apisix/conf/config.yaml:ro"
