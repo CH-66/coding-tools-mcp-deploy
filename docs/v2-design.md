@@ -128,11 +128,11 @@ Quick Tunnel 为避免不同 cloudflared 版本对 origin path 的处理差异�
 2.0 离线包新增：
 
 - `apache/apisix:3.18.0-debian`
-- `bitnamilegacy/etcd:3.5.11`
+- amd64：`bitnamilegacy/etcd:3.5.11`；arm64：`rancher/coreos-etcd:v3.4.15-arm64`，构建时统一 retag 为 `coding-tools-etcd:2.0.0`
 - `compose/gateway-compose.yml`
 - `gateway/config.yaml.tpl`
 
-所有镜像在联网构建机按目标原生架构拉取并执行 `docker save`。现场安装阶段只执行 `docker load`，不访问 Docker Hub、GitHub 或软件源。
+所有镜像在联网构建机按目标原生架构拉取并执行 `docker save`。etcd 会按架构选择 APISIX 官方 Docker 示例使用的兼容镜像，再统一 retag 为运行时固定镜像名。现场安装阶段只执行 `docker load`，不访问 Docker Hub、GitHub 或软件源。
 
 ## 兼容策略
 
