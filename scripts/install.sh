@@ -8,9 +8,6 @@ BIN_LINK="${BIN_LINK:-/usr/local/bin/mcpctl}"
 [[ "${EUID:-$(id -u)}" -eq 0 ]] || { echo "run with sudo/root" >&2; exit 1; }
 command -v docker >/dev/null 2>&1 || { echo "docker is required" >&2; exit 1; }
 docker info >/dev/null 2>&1 || { echo "docker daemon unavailable" >&2; exit 1; }
-if ! docker compose version >/dev/null 2>&1 && ! command -v docker-compose >/dev/null 2>&1; then
-  echo "docker compose is required" >&2; exit 1
-fi
 
 mkdir -p "$INSTALL_DIR"/{bin,compose,config,instances,tunnel/providers,systemd}
 cp "$SOURCE_DIR/bin/mcpctl" "$INSTALL_DIR/bin/mcpctl"
@@ -23,9 +20,20 @@ chmod 755 "$INSTALL_DIR/bin/mcpctl" "$INSTALL_DIR/tunnel/run.sh" "$INSTALL_DIR/t
 chmod 700 "$INSTALL_DIR/instances"
 ln -sfn "$INSTALL_DIR/bin/mcpctl" "$BIN_LINK"
 
-for b in tunnel-client cloudflared; do
+for b in tunnel-client cloudflared docker-compose; do
   [[ -f "$SOURCE_DIR/offline/bin/$b" ]] && install -m 755 "$SOURCE_DIR/offline/bin/$b" "$INSTALL_DIR/bin/$b"
 done
+
+if [[ -x "$INSTALL_DIR/bin/docker-compose" ]]; then
+  "$INSTALL_DIR/bin/docker-compose" version >/dev/null
+elif docker compose version >/dev/null 2>&1; then
+  :
+elif command -v docker-compose >/dev/null 2>&1; then
+  docker-compose version >/dev/null
+else
+  echo "docker compose unavailable and bundled offline/bin/docker-compose is missing" >&2
+  exit 1
+fi
 
 shopt -s nullglob
 for image in "$SOURCE_DIR"/offline/images/*.tar; do
