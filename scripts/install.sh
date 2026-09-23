@@ -7,9 +7,20 @@ BIN_LINK="${BIN_LINK:-/usr/local/bin/mcpctl}"
 MCP_GATEWAY_AUTO_START="${MCP_GATEWAY_AUTO_START:-on}"
 
 [[ "${EUID:-$(id -u)}" -eq 0 ]] || { echo "run with sudo/root" >&2; exit 1; }
-command -v docker >/dev/null 2>&1 || { echo "docker is required" >&2; exit 1; }
+source "$SOURCE_DIR/config/versions.env"
+
+if command -v docker >/dev/null 2>&1; then
+  echo "Using existing Docker: $(docker --version 2>/dev/null || command -v docker)"
+else
+  echo "Docker not found. Installing bundled Docker Engine $DOCKER_ENGINE_VERSION ..."
+  bash "$SOURCE_DIR/scripts/install-docker.sh"     "$SOURCE_DIR/offline/docker/docker-$DOCKER_ENGINE_VERSION.tgz"     "$SOURCE_DIR/systemd/docker.service"
+fi
+
+docker info >/dev/null 2>&1 || {
+  echo "Docker command exists but daemon is unavailable; existing Docker will not be overwritten." >&2
+  exit 1
+}
 command -v curl >/dev/null 2>&1 || { echo "curl is required" >&2; exit 1; }
-docker info >/dev/null 2>&1 || { echo "docker daemon unavailable" >&2; exit 1; }
 
 mkdir -p "$INSTALL_DIR"/{bin,compose,config,instances,tunnel/providers,systemd,gateway/data/etcd}
 cp "$SOURCE_DIR/bin/mcpctl" "$INSTALL_DIR/bin/mcpctl"
