@@ -4,15 +4,17 @@
 
 ## 1. 部署前检查
 
-确认服务器已安装 Docker，并且 Docker 服务已启动、已设置开机自启动：
+先检查 Docker：
 
 ```bash
-docker --version
-systemctl is-active docker
-systemctl is-enabled docker
+command -v docker && docker --version
 ```
 
-正常应分别看到 Docker 版本、`active`、`enabled`。
+处理原则：
+
+- 有 Docker：安装程序直接使用现场 Docker，不覆盖、不升级；
+- 没有 Docker：安装程序自动使用离线包内置 Docker Engine；
+- 有 Docker 命令但 daemon 异常：安装程序直接报错，不会自动替换现场 Docker。
 
 确认本机端口未被占用：
 
@@ -32,16 +34,16 @@ uname -m
 
 | `uname -m` | 安装包 |
 |---|---|
-| `x86_64` | `coding-tools-mcp-deploy-2.0.0-linux-amd64.tgz` |
-| `aarch64` / `arm64` | `coding-tools-mcp-deploy-2.0.0-linux-arm64.tgz` |
+| `x86_64` | `coding-tools-mcp-deploy-2.0.1-linux-amd64.tgz` |
+| `aarch64` / `arm64` | `coding-tools-mcp-deploy-2.0.1-linux-arm64.tgz` |
 
 ## 2. 安装
 
 解压对应架构的离线包：
 
 ```bash
-tar -zxf coding-tools-mcp-deploy-2.0.0-linux-amd64.tgz
-cd coding-tools-mcp-deploy-2.0.0
+tar -zxf coding-tools-mcp-deploy-2.0.1-linux-amd64.tgz
+cd coding-tools-mcp-deploy-2.0.1
 ```
 
 执行安装：
@@ -380,7 +382,7 @@ mcpctl doctor
 |---|---|---|
 | Docker | `systemctl is-active docker` | `active` |
 | Docker 开机启动 | `systemctl is-enabled docker` | `enabled` |
-| 版本 | `mcpctl version` | 显示 `deploy=2.0.0` |
+| 版本 | `mcpctl version` | 显示 `deploy=2.0.1` |
 | APISIX | `mcpctl gateway doctor` | `Gateway: HEALTHY` |
 | MCP 实例 | `mcpctl doctor <实例名>` | 检查项全部通过 |
 | APISIX Route | `mcpctl gateway list` | 对应实例 Route 为 `active` |
