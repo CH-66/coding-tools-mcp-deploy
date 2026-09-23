@@ -63,22 +63,27 @@ project-c -> coding-tools-mcp-project-c -> 127.0.0.1:18767
 
 ## 安装
 
-现场只需要 Docker daemon 已安装并运行。
+现场**可以没有 Docker**。安装程序按下面逻辑处理：
+
+- 已检测到 `docker` 命令：直接使用现场 Docker，不覆盖、不升级；
+- 未检测到 `docker` 命令：安装离线包内置 Docker Engine，并注册为 systemd 服务；
+- 已有 `docker` 命令但 daemon 不可用：直接报错，避免用离线 Docker 覆盖现场安装。
 
 ```bash
-tar -zxf coding-tools-mcp-deploy-2.0.0-linux-amd64.tgz
-cd coding-tools-mcp-deploy-2.0.0
+tar -zxf coding-tools-mcp-deploy-2.0.1-linux-amd64.tgz
+cd coding-tools-mcp-deploy-2.0.1
 sudo bash scripts/install.sh
 ```
 
 安装程序会：
 
-1. 安装包内固定版本的 Docker Compose standalone；
-2. `docker load` MCP、APISIX、etcd 离线镜像；
-3. 安装 OpenAI `tunnel-client` 和 Cloudflare `cloudflared`；
-4. 生成随机 APISIX Admin API Key；
-5. 启动 APISIX + etcd；
-6. 将已有实例同步到 APISIX。
+1. 检查 Docker；仅在目标机没有 Docker 时安装包内 Docker Engine；
+2. 安装包内固定版本的 Docker Compose standalone；
+3. `docker load` MCP、APISIX、etcd 离线镜像；
+4. 安装 OpenAI `tunnel-client` 和 Cloudflare `cloudflared`；
+5. 生成随机 APISIX Admin API Key；
+6. 启动 APISIX + etcd；
+7. 将已有实例同步到 APISIX。
 
 如明确不希望安装后自动启动 Gateway：
 
@@ -253,6 +258,7 @@ mcpctl tunnel off ntip
 - MCP Docker image 已包含；
 - APISIX Docker image 已包含；
 - etcd Docker image 已包含；
+- Docker Engine static bundle 已包含，仅在目标机没有 Docker 时使用；
 - Docker Compose standalone 已包含；
 - OpenAI `tunnel-client` 已包含；
 - Cloudflare `cloudflared` 已包含；
@@ -274,16 +280,18 @@ make offline-pkg
 2. 保存 MCP 镜像；
 3. 拉取并保存 APISIX 3.18.0；
 4. 按目标架构选择并保存 etcd；
-5. 下载并校验 Docker Compose standalone；
-6. 下载 OpenAI `tunnel-client`；
-7. 下载 Cloudflare `cloudflared`；
-8. 生成 SHA256SUMS；
-9. 输出 tgz。
+5. 下载对应架构的 Docker Engine static bundle；
+6. 下载并校验 Docker Compose standalone；
+7. 下载 OpenAI `tunnel-client`；
+8. 下载 Cloudflare `cloudflared`；
+9. 生成 SHA256SUMS；
+10. 输出 tgz。
 
 当前固定版本：
 
 ```text
 coding-tools-mcp      0.3.0
+Docker Engine         29.8.1（仅无 Docker 时安装）
 Docker Compose        v2.20.3
 Apache APISIX         3.18.0
 etcd amd64            3.5.11 (bitnamilegacy)
@@ -297,8 +305,8 @@ cloudflared           2026.9.1
 输出：
 
 ```text
-dist/coding-tools-mcp-deploy-2.0.0-linux-amd64.tgz
-dist/coding-tools-mcp-deploy-2.0.0-linux-arm64.tgz
+dist/coding-tools-mcp-deploy-2.0.1-linux-amd64.tgz
+dist/coding-tools-mcp-deploy-2.0.1-linux-arm64.tgz
 ```
 
 ## 安装后目录
@@ -364,6 +372,7 @@ mcpctl doctor
 - https://github.com/xyTom/coding-tools-mcp
 - https://github.com/apache/apisix
 - https://github.com/apache/apisix-docker
+- https://docs.docker.com/engine/install/binaries/
 - https://github.com/docker/compose
 - https://github.com/openai/tunnel-client
 - https://github.com/cloudflare/cloudflared
