@@ -5,14 +5,15 @@ ARCHIVE="${1:-}"
 UNIT_FILE="${2:-}"
 
 [[ "${EUID:-$(id -u)}" -eq 0 ]] || { echo "run with sudo/root" >&2; exit 1; }
-[[ -n "$ARCHIVE" && -f "$ARCHIVE" ]] || { echo "offline Docker archive not found: $ARCHIVE" >&2; exit 1; }
-[[ -n "$UNIT_FILE" && -f "$UNIT_FILE" ]] || { echo "Docker systemd unit not found: $UNIT_FILE" >&2; exit 1; }
 
 if command -v docker >/dev/null 2>&1; then
   echo "Docker already exists: $(docker --version 2>/dev/null || command -v docker)"
   echo "Skip bundled offline Docker installation."
   exit 0
 fi
+
+[[ -n "$ARCHIVE" && -f "$ARCHIVE" ]] || { echo "offline Docker archive not found: $ARCHIVE" >&2; exit 1; }
+[[ -n "$UNIT_FILE" && -f "$UNIT_FILE" ]] || { echo "Docker systemd unit not found: $UNIT_FILE" >&2; exit 1; }
 
 for c in tar systemctl iptables; do
   command -v "$c" >/dev/null 2>&1 || { echo "$c is required to install bundled Docker" >&2; exit 1; }
