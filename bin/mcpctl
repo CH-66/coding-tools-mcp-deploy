@@ -570,6 +570,6 @@ case "${1:-}" in
   remove|rm) shift; cmd_remove "$@";;
   gateway) shift; cmd_gateway "$@";;
   tunnel) shift; cmd_tunnel "$@";;
-  version|-v|--version) echo "deploy=$DEPLOY_VERSION mcp=$CODING_TOOLS_MCP_VERSION compose=$DOCKER_COMPOSE_VERSION apisix=$APISIX_VERSION etcd=$ETCD_IMAGE openai=$OPENAI_TUNNEL_CLIENT_VERSION cloudflared=$CLOUDFLARED_VERSION";;
+  version|-v|--version) echo "deploy=$DEPLOY_VERSION mcp=$CODING_TOOLS_MCP_VERSION docker_fallback=$DOCKER_ENGINE_VERSION compose=$DOCKER_COMPOSE_VERSION apisix=$APISIX_VERSION etcd=$ETCD_IMAGE openai=$OPENAI_TUNNEL_CLIENT_VERSION cloudflared=$CLOUDFLARED_VERSION";;
   *) usage;;
 esac
